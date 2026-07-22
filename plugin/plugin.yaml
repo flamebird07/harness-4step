@@ -1,0 +1,22 @@
+name: four-step-enforcer
+version: "1.0.0"
+description: |
+  Harness 4-Step enforcement plugin. Blocks write_file/patch calls until
+  delegate_task has been invoked in the same session, enforcing the
+  "Hermes must delegate analysis/planning before modifying code" rule.
+  
+  Uses pre_tool_call hook to detect delegate_task completion and block
+  premature file modifications. Supports exemptions for subagents, kanban
+  workers, and explicit user overrides.
+author: "Hermes Agent"
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - on_session_start
+  - on_session_end
+config:
+  enabled: true
+  ttl_minutes: 30
+  max_sessions: 200
+  exempt_tools: []
+  exempt_goal_patterns: []
