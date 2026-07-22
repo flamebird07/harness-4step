@@ -1,7 +1,7 @@
 ---
 name: enforce-4-step-method
-description: "Enforce the 4-step method: Kimi CLI Review → MiMo Code Plan → MiMo Code Execute → Codex CLI Review"
-version: 2.0.0
+description: "Enforce the 4-step method: Codex CLI Review → MiMo Code Plan → MiMo Code Execute → Kimi CLI Review"
+version: 2.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -23,10 +23,18 @@ This skill enforces the 4-step method for code changes. It uses different agents
 
 | Step | Agent | Task |
 |------|-------|------|
-| Step 1 | Kimi CLI (K3) | Review - Analyze the problem and output findings |
+| Step 1 | Codex CLI | Review - Analyze the problem and output findings |
 | Step 2 | MiMo Code | Plan - Create implementation plan (NO code changes) |
 | Step 3 | MiMo Code | Execute - Implement the plan (code changes allowed) |
-| Step 4 | Codex CLI | Re-review - Verify the implementation |
+| Step 4 | Kimi CLI (K3) | Re-review - Verify the implementation |
+
+### Agent分配理由
+
+| Agent | 额度 | 消耗特点 | 分配步骤 |
+|-------|------|----------|----------|
+| Kimi CLI | 偏少 | 单次消耗高 | Step4（可能多次循环，单次消耗低） |
+| MiMo Code | 中等 | 推理能力强 | Step2/Step3（需要推理） |
+| Codex CLI | 较多 | 单次消耗高 | Step1（只执行1次） |
 
 ## 角色核验规则（MUST）
 
