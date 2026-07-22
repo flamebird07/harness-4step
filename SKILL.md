@@ -1,7 +1,7 @@
 ---
 name: enforce-4-step-method
 description: "Enforce the 4-step method: Kimi CLI Review → MiMo Code Plan → MiMo Code Execute → Codex CLI Review"
-version: 2.1.0
+version: 2.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]

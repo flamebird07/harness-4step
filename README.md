@@ -1,56 +1,74 @@
-# Enforce 4-Step Method
+# 4步法强制执行系统
 
-A Hermes skill that enforces the 4-step method for code changes: **Plan → Delegate → Review → Implement**.
+> ⚠️ **迁移声明**：本仓库已整合 `enforce-4-step-method` 的插件代码。
+> 完整的 4 步法系统（skill + plugin + references）现在都在此仓库中。
+> `enforce-4-step-method` 仓库已归档，不再维护。
 
-## Overview
+## 系统组成
 
-This skill prevents direct code modifications by providing technical checks and validation to ensure compliance with the 4-step workflow.
+| 组件 | 作用 |
+|------|------|
+| SKILL.md | 定义4步法规则和流程 |
+| plugin/ | 技术强制执行插件 |
+| references/ | 参考文档 |
+| scripts/ | 工具脚本 |
 
-## The 4-Step Method
+## 快速开始
 
-**MANDATORY for all code changes:**
-
-1. **Plan** - Write implementation plan using `writing-plans` skill
-2. **Delegate** - Use `delegate_task` to dispatch subagent for implementation
-3. **Review** - Two-stage review (spec compliance + code quality)
-4. **Implement** - Only after reviews pass
-
-## Features
-
-- Enforces no direct modifications to source code
-- Validates git commits for compliance
-- Provides pre-commit hooks
-- Includes validation scripts
-- Integrates with other Hermes skills
-
-## Installation
-
-Copy the `SKILL.md` file to your Hermes skills directory:
-
+### 1. 安装插件
 ```bash
-# For Hermes Agent
-cp SKILL.md ~/.hermes/skills/software-development/enforce-4-step-method/
+# 复制插件到正确位置
+cp -r plugin/ ~/AppData/Local/hermes/plugins/four-step-enforcer/
+
+# 启用插件
+# 编辑 ~/AppData/Local/hermes/config.yaml，添加：
+# plugins:
+#   enabled:
+#     - four-step-enforcer
 ```
 
-## Usage
-
-The skill is automatically enforced when loaded. To manually check compliance:
-
+### 2. 安装Skill
 ```bash
-# Check if plan exists
-ls docs/plans/*.md
-
-# Check recent commits for violations
-git log --oneline --name-only HEAD~5..HEAD | grep -E '\.(py|js|ts|java|go|rs)$'
+# 复制SKILL.md到skills目录
+cp SKILL.md ~/AppData/Local/hermes/skills/harness-4step/
 ```
 
-## Integration
+### 3. 验证
+```bash
+# 检查插件加载
+hermes plugins list
 
-This skill works with:
-- `writing-plans` - For creating implementation plans
-- `subagent-driven-development` - For executing plans through subagents
-- `requesting-code-review` - For the two-stage review process
+# 运行测试
+cd ~/AppData/Local/hermes/plugins/four-step-enforcer
+python test_four_step_enforcer.py
+```
 
-## License
+## 4步法流程
 
-MIT
+| 步骤 | Agent | 任务 |
+|------|-------|------|
+| Step 1 | Kimi CLI (K3) | 审查 - 分析问题 |
+| Step 2 | MiMo Code | 方案 - 制定计划 |
+| Step 3 | MiMo Code | 执行 - 实施修改 |
+| Step 4 | Codex CLI | 复审 - 验证结果 |
+
+## 文件结构
+
+```
+harness-4step/
+├── README.md                    # 项目介绍
+├── SKILL.md                     # Hermes技能定义
+├── MIGRATION.md                 # 迁移说明
+├── plugin/
+│   ├── __init__.py              # 插件主代码
+│   ├── plugin.yaml              # 插件元数据
+│   └── test_four_step_enforcer.py  # 测试文件
+├── references/                  # 参考文档
+└── scripts/
+    └── regex-verify.js
+```
+
+## 版本历史
+
+- v2.0.0 (2026-07-22): 整合两个仓库，添加插件强制执行系统
+- v1.0.0 (2026-07-21): 初始版本

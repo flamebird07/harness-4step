@@ -1,5 +1,5 @@
 name: four-step-enforcer
-version: "1.0.0"
+version: "2.0.0"
 description: |
   Harness 4-Step enforcement plugin. Blocks write_file/patch calls until
   delegate_task has been invoked in the same session, enforcing the
