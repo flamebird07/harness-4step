@@ -28,6 +28,29 @@ This skill enforces the 4-step method for code changes. It uses different agents
 | Step 3 | MiMo Code | Execute - Implement the plan (code changes allowed) |
 | Step 4 | Codex CLI | Re-review - Verify the implementation |
 
+## 角色核验规则（MUST）
+
+**每步执行后必须汇报：**
+1. 当前是第几步
+2. 由哪个Agent执行
+3. 核验角色是否正确
+
+**汇报格式：**
+```
+## Step X 执行汇报
+
+| 项目 | 内容 |
+|------|------|
+| 当前步骤 | Step X |
+| 执行Agent | [Agent名称] |
+| 角色核验 | ✅ 正确 / ❌ 违规 |
+```
+
+**违规处理：**
+- 如果发现角色不符，必须立即停止当前操作
+- 重新用正确的Agent执行该步骤
+- 在汇报中标注"已重新执行"
+
 ## Enforcement System
 
 ### 1. Skill Rules (Prompt-based)
