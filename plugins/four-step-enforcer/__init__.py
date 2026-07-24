@@ -301,38 +301,12 @@ def _on_pre_tool_call(
     state = _get_or_create_state(session_key)
 
     # --- delegate_task: allow, success tracked in post_tool_call ---
-    # --- terminal with run_cli.py: only mark done on SUCCESS ---
-    if tool_name == "terminal" and _is_run_cli_call(args):
-        session_key = _resolve_session_key(session_id, task_id, args)
-        if session_key is None:
-            return
-        # Only mark step done if terminal call succeeded
-        _success_statuses = ("success", "completed", "ok")
-        is_success = (
-            status in _success_statuses
-            and not error_type
-            and not (error_message and error_message.strip())
-        )
-        if not is_success:
-            logger.debug("four-step-enforcer: run_cli.py call failed (status=%s), not marking step done", status)
-            return
-        state = _get_or_create_state(session_key)
-        cmd = str((args or {}).get("command", "") or "")
-        for step_name in ["step1", "step2", "step3", "step4"]:
-            if f"--step {step_name}" in cmd or f"--step={step_name}" in cmd:
-                state.step1_done = True
-                state.step1_tool_name = f"run_cli.py:{step_name}"
-                logger.info("four-step-enforcer: %s completed via run_cli.py (verified success) for session %s",
-                    step_name, session_key[:16])
-                break
-        return
-
     if tool_name == "delegate_task":
-        return None  # Always allow delegate_task
+        return None
 
-    # --- terminal with run_cli.py: allow (real CLI execution) ---
+    # --- terminal with run_cli.py: allow (status checked in post_tool_call) ---
     if tool_name == "terminal" and _is_run_cli_call(args):
-        return None  # Allow real CLI execution
+        return None
 
     # --- write_file/patch: check Step 1 ---
     if tool_name in _BLOCKED_TOOLS:

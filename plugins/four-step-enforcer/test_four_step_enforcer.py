@@ -14,7 +14,8 @@ import time
 # ---------------------------------------------------------------------------
 # Load the plugin module (hyphenated package name needs special handling)
 # ---------------------------------------------------------------------------
-PLUGIN_DIR = os.path.join(os.path.expanduser("~"), ".hermes", "plugins", "four-step-enforcer")
+# Use relative path from test file location
+PLUGIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)))
 init_path = os.path.join(PLUGIN_DIR, "__init__.py")
 
 with open(init_path, "r", encoding="utf-8") as f:
