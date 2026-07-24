@@ -118,10 +118,10 @@ def test_delegate_task_marks_step1(ctx):
 
 
 # ---------------------------------------------------------------------------
-# Test 4: write_file allowed after delegate_task
+# Test 4: write_file blocked after delegate_task (delegate no longer marks step_done)
 # ---------------------------------------------------------------------------
 def test_write_file_allowed_after_delegate(ctx):
-    print("Test 4: write_file allowed after delegate_task...")
+    print("Test 4: write_file blocked after delegate_task (delegate no longer marks step_done)...")
     hook = ctx.hooks["pre_tool_call"][0]
     
     result = hook(
@@ -130,8 +130,9 @@ def test_write_file_allowed_after_delegate(ctx):
         session_id="test-session-1",
         task_id="",
     )
-    assert result is None, f"write_file should be allowed after delegate_task, got {result}"
-    print("  ✅ PASS: write_file correctly allowed after delegate_task")
+    assert result is not None and result.get("action") == "block", \
+        f"write_file should be blocked after delegate_task (only run_cli.py marks step_done), got {result}"
+    print("  ✅ PASS: write_file correctly blocked after delegate_task")
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +169,14 @@ def test_session_isolation(ctx):
     )
     assert result is not None, "session-2 should be blocked (no delegate_task)"
     
-    # session-1 has delegate_task, should be allowed
+    # session-1 has delegate_task but delegate no longer marks step_done
     result = hook(
         tool_name="write_file",
         args=make_args(path="test.js", content="test"),
         session_id="test-session-1",
         task_id="",
     )
-    assert result is None, "session-1 should be allowed (has delegate_task)"
+    assert result is not None, "session-1 should be blocked (delegate_task no longer marks step_done)"
     print("  ✅ PASS: Sessions are correctly isolated")
 
 
@@ -209,14 +210,15 @@ def test_session_id_none_fallback(ctx):
         error_message="",
     )
     
-    # Now write_file with same task_id should be allowed
+    # Now write_file with same task_id should still be blocked
+    # (delegate_task no longer marks step_done, only run_cli.py does)
     result = pre_hook(
         tool_name="write_file",
         args=make_args(path="test.js", content="test"),
         session_id="",
         task_id="task-123",
     )
-    assert result is None, "write_file should be allowed after delegate with same task_id"
+    assert result is not None, "write_file should be blocked (delegate_task no longer marks step_done)"
     print("  ✅ PASS: session_id=None correctly falls back to task_id")
 
 
