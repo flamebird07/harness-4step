@@ -130,6 +130,24 @@ Each task creates a directory:
 | MiMo Code (Step 3) | Execute code changes | Review |
 | Kimi CLI K3 (Step 4) | Re-review, Verify | Modify code |
 
+## CLI Transparency
+
+**Every step MUST display which CLI was actually invoked.**
+
+Output format:
+```
+============================================================
+CLI Invoked: CODEX
+Step: step1
+Command: codex exec --ephemeral...
+============================================================
+```
+
+This ensures:
+- Users can verify which CLI tool was used
+- No ambiguity about which model/agent executed each step
+- Audit trail for compliance
+
 ## Configuration
 
 ### Default Configuration (in repo)

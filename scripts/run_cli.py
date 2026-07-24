@@ -233,4 +233,10 @@ if __name__ == "__main__":
     prompt = Path(a.prompt_file).read_text(encoding="utf-8") if a.prompt_file else (a.prompt or "")
     if not prompt: print("Need --prompt or --prompt-file", file=sys.stderr); sys.exit(1)
     r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt, timeout_seconds=a.timeout)
+    # Print CLI invocation info for transparency
+    print(f"\n{'='*60}")
+    print(f"CLI Invoked: {r.agent.upper()}")
+    print(f"Step: {r.step}")
+    print(f"Command: {' '.join(r.command[:3])}...")
+    print(f"{'='*60}\n")
     print(json.dumps(asdict(r), ensure_ascii=False, indent=2)); sys.exit(0 if r.success else 1)
