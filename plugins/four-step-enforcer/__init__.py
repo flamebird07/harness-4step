@@ -1,15 +1,15 @@
-"""four-step-enforcer — Harness 4-Step enforcement plugin.
+"""four-step-enforcer — Harness 4-Step enforcement plugin (v3).
 
-Enforces the "4-step harness" rule at the tool-call level:
-  1. When delegate_task completes successfully → mark Step 1 as done for this session
-  2. When write_file/patch is invoked → block unless delegate_task was completed first
+Enforces real CLI execution via run_cli.py at the tool-call level:
+  1. When run_cli.py completes successfully → mark step_done for this session
+  2. When write_file/patch/skill_manage is invoked → block unless run_cli.py succeeded
 
-This replaces the old skill-only approach (which LLMs could ignore) with
-a hard technical gate that blocks tool calls at the infrastructure level.
+This replaces delegate_task-based marking (v2) with real CLI execution tracking.
+delegate_task is allowed but does NOT mark step_done — only run_cli.py does.
 
 Architecture:
-  - pre_tool_call hook: intercepts write_file/patch, checks state, blocks or allows
-  - post_tool_call hook: observes delegate_task success → marks step1_done
+  - pre_tool_call hook: intercepts write_file/patch/skill_manage, checks state, blocks or allows
+  - post_tool_call hook: observes run_cli.py success → marks step_done
   - on_session_start/end: lifecycle hooks for cleanup
   - State: in-memory dict keyed by session_id with TTL-based expiry
 
@@ -22,7 +22,7 @@ Exemptions (checked in order):
   1. Plugin disabled via config
   2. Tool not in target list (write_file, patch, skill_manage)
   3. No session identifier available → bypass (degraded mode)
-  4. delegate_task already completed successfully (step1_done)
+  4. run_cli.py already completed successfully (step_done)
   5. Explicit exemption via config (exempt_tools, exempt_goal_patterns)
 
 Memory management:
