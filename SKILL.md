@@ -29,7 +29,7 @@ This skill enforces the 4-step method for code changes. Each step MUST be execut
 |------|-------|----------|------|
 | Step 1 | **Codex CLI** | `codex exec` | ❌ 不能改代码 |
 | Step 2 | **Codex CLI** | `codex exec` | ❌ 不能改代码 |
-| Step 3 | **MiMo Code** | `codex exec --model mimo` | ❌ 不能做方案/审查 |
+| Step 3 | **MiMo Code** | `mimo run` | ❌ 不能做方案/审查 |
 | Step 4 | **Kimi CLI K3** | `kimi -p` | ❌ 不能改代码 |
 
 ## CLI Execution Contract (MUST)
@@ -132,20 +132,37 @@ Each task creates a directory:
 
 ## Configuration
 
-File: `~/.hermes/harness-bindings.yaml`
+### Default Configuration (in repo)
+
+| Step | Default Agent | CLI |
+|------|---------------|-----|
+| Step 1 | Codex CLI | `codex exec` |
+| Step 2 | Codex CLI | `codex exec` |
+| Step 3 | MiMo Code | `mimo run` |
+| Step 4 | Kimi CLI | `kimi -p` |
+
+### User Override
+
+Create `~/.hermes/harness-config.yaml` to override defaults:
 
 ```yaml
-step1_review:   codex
-step2_plan:     codex
-step3_execute:  mimo
-step4_rereview: kimi-cli
-
-locks:
-  step1_review:   false
-  step2_plan:     false
-  step3_execute:  false
-  step4_rereview: false
+# Example: Use MiMo Code (free) for ALL steps
+step1: {agent: mimo}
+step2: {agent: mimo}
+step4: {agent: mimo}
 ```
+
+Available agents: `codex`, `mimo`, `kimi`
+
+### Show Current Config
+
+```bash
+python scripts/run_cli.py --show-config
+```
+
+### Legacy Config (deprecated)
+
+File: `~/.hermes/harness-bindings.yaml` (no longer used by run_cli.py)
 
 ## Version History
 
