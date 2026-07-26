@@ -134,14 +134,19 @@ Each task creates a directory:
 
 **Every step MUST display which CLI was actually invoked.**
 
-Output format:
+`run_cli.py` prints the resolved executable and the full command line for each step:
+
 ```
 ============================================================
 CLI Invoked: CODEX
 Step: step1
-Command: codex exec --ephemeral...
+Command: /resolved/path/to/codex exec --ephemeral --skip-git-repo-check --sandbox danger-full-access --json "<prompt>"
 ============================================================
 ```
+
+Notes:
+- The executable path is resolved dynamically via `shutil.which()`; **no private paths are hardcoded**.
+- The full command is displayed; if the prompt argument is very long it is truncated in the display with a `[N more chars]` indicator.
 
 This ensures:
 - Users can verify which CLI tool was used
