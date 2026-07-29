@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Harness the 4-step method: Codex CLI Review -> Codex CLI Plan -> Codex CLI Execute -> MiMo Code Re-review"
-version: 12.2.2
+version: 12.3.1
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v12.2.2 — Naming Correction + Cross-Contamination Prevention)
+# Harness 4-Step Method (v12.3.1 — Loop-Bypass Prevention + Self-Audit Hardening)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -47,7 +47,7 @@ metadata:
 
 ## Overview
 
-Harnesses the 4-step method with real CLI execution. v12 adds: naming standardization, cross-contamination prevention rules, timeout resilience per CLI tool, fallback paths when a CLI fails, and subagent constraint injection for delegate_task.
+Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verification gates after every CLI call, failure classification matrix, circuit breaker for repeated identical failures, tools-in-scope allowlist, pre/post state capture around Step 3, terminal statuses, enhanced reporting template, and enhanced self-audit. See `references/session-forensics.md` for diagnosing 4-step execution faults.
 
 ## Core Principle
 
@@ -122,7 +122,7 @@ codex --version
 | `&&` | 无效运算符 → ParserError | 命令不执行 |
 | `&` | 调用运算符 → 需要 `& command` | 路径被解释为命令 |
 | `--flag` | 长参数被截断 | `--skip-git-repo-check` → `-git-repo-check` 找不到命令 |
-| `\` | 路径分隔符被 MSYS bash 消耗 | `C:\Users\...` → `C:Users...` |
+| `\\` | 路径分隔符被 MSYS bash 消耗 | `C:\\Users\\...` → `C:Users...` |
 
 **症状**：SSH 命令返回 `'&&' 不是此版本中的有效语句运算符` 或 `'-git-repo-check' 不是内部或外部命令`。
 
@@ -189,7 +189,6 @@ CLI execution: SSH to 10.0.0.50 (PowerShell转义降级 → 本地batch文件方
 
 **基本语法**：
 
-**基本语法**：
 ```bash
 mimo run --model <provider/model> <message>
 ```
@@ -291,16 +290,210 @@ Self-audit correction exception: <发现的问题>; files in scope: <文件范�
 - 限制：仅用于配置文件（config.yaml、auth.json），不用于代码文件
 - 不能删除或禁用插件本身
 
+## Result Verification Gate
+
+### 强制规则：每条 CLI 调用后必须验证
+
+**每次 CLI 调用（包括重试和降级）后，必须执行以下验证：**
+
+1. **输出存在性检查**：CLI 是否产生了 stdout 输出？空输出（无论退出码）视为失败，不得声称成功。
+2. **输出相关性检查**：输出是否包含与当前步骤目标相关的内容？（例如 Step 2 的方案是否包含具体修复点）。
+3. **退出码检查**：exit 124（超时）无论是否有部分输出，都视为失败，不得声称完成。
+4. **验证门**：
+   - Step 1/2：确认输出包含审查发现或方案要点
+   - Step 3：确认 diff 或代码修改已实际写入文件
+   - Step 4：确认复审结论包含具体问题或确认
+
+**验证失败的处理**：
+- 验证未通过，不能在汇报中声称该步骤"完成"
+- 必须记录验证失败的具体原因
+- 验证失败等同于 CLI 失败，走降级/重试路径
+
+### 防虚假成功规则
+
+**不得在以下情况声称步骤完成：**
+- CLI 返回 exit 124（超时），无论输出是否部分存在
+- CLI 返回空 stdout（即便 exit code 是 0）
+- CLI 输出只有帮助信息、错误信息或无关内容
+- 降级路径未执行（仅声明了降级但未实际调用替代 CLI）
+
+**正确做法：**
+```
+// 错误 ❌
+Step 2 complete ✅（11 点修复方案）
+
+// 正确 ✅
+Step 2: Codex CLI timed out (exit 124, empty output)
+→ 精简 prompt 重试
+→ 第二次仍超时
+→ 降级到本地验证
+```
+
+## Failure Classification Matrix
+
+| 失败类型 | 判断依据 | 是否可重试 | 是否可降级 | 是否终止流程 |
+|---------|---------|-----------|-----------|------------|
+| **超时** | exit 124 或 timeout 异常 | 是（精简 prompt 重试 1 次） | 是（降级路径） | 否（2 次后才终止） |
+| **空输出** | exit 0 但 stdout 为空 | 是（重试 1 次） | 是（降级路径） | 否（2 次后才终止） |
+| **认证失败** | HTTP 401/403、auth error | 否（直接降级） | 是（换 CLI） | 如果所有 CLI 都认证失败 |
+| **可执行文件失败** | EFTYPE、command not found、Missing dependency | 是（修复后重试） | 是（降级路径） | 如果修复也失败 |
+| **无效输出** | 输出存在但内容不相关（如帮助信息、错误日志） | 是（精简 prompt 重试） | 是（降级路径） | 否（2 次后才终止） |
+
+**重试规则**：
+- 同一失败类型最多重试 1 次
+- 重试后仍属于同一失败类型 → 切换到降级路径
+- 降级后仍失败 → 打开 circuit breaker（见下一节）
+
+**跨步骤失败累计**：如果累计 3 个步骤都因超时/空输出/无效输出失败，整体流程必须终止，终端状态为 `BLOCKED_CLI_FAILURE`。
+
+## Circuit Breaker
+
+### 单 CLI 熔断
+当同一步骤的同一 CLI 连续 2 次发生**相同的失败类型**（都是超时，或都是空输出），则打开该 CLI 的 circuit breaker：
+- 不再重试该 CLI 命令
+- 必须切换到降级路径（不同 CLI 或不同执行方式）
+- 如果降级路径也失败，则打开步骤级熔断
+
+### 步骤级熔断
+当某步骤的 CLI 和降级路径都失败，该步骤打开 circuit breaker：
+- 该步骤标记为 BLOCKED
+- 不能继续执行后续步骤
+- 整体流程以 `BLOCKED_CLI_FAILURE` 终止
+
+### 全局熔断（v12.3.0 新增）
+当连续 3 个步骤（不限顺序）都因超时/空输出/无效输出失败，打开全局熔断：
+- 立即终止整个 4 步法流程
+- 终端状态为 `BLOCKED_CLI_FAILURE`
+- 不得继续任何步骤，不得声称部分完成
+- 必须向用户报告失败原因和已执行步骤
+
+## Tools-in-Scope Allowlist
+
+### 每步骤允许的工具
+
+| 步骤 | 允许的工具 | 禁止的工具 |
+|------|-----------|-----------|
+| Step 1 | terminal（运行 codex exec）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
+| Step 2 | terminal（运行 codex exec --ephemeral）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
+| Step 3 | terminal（运行 codex exec -s）、write_file（写 prompt 文件）、read_file | text_to_speech、delegate_task（代替 CLI）、memory、skill_manage（非自迭代）、patch（除非在 four-step-enforcer 插件允许的绕过范围内，仅限 config.yaml/auth.json） |
+| Step 4 | terminal（运行 mimo run / codex exec）、read_file | patch、write_file、text_to_speech、delegate_task（代替 CLI） |
+
+### 全局禁止
+- **text_to_speech**：在 4 步法流程的任何步骤中，禁止调用 text_to_speech 工具。该工具与步骤目标无关，调用它会生成无关文件和混淆。
+- **delegate_task 冒充 CLI**：禁止用 delegate_task 返回文本冒充 CLI 输出。delegate_task 可用于辅助任务（如并行审查），但不能替代 Step 1/2/3/4 的 CLI 调用。
+- **memory 写入**：在 4 步法流程中，禁止写入 memory（自迭代 skill 更新除外）。流程结束后才能记录。
+
+## Terminal Statuses
+
+每次 4 步法结束时，必须分配一个明确的终端状态：
+
+| 状态 | 含义 | 条件 |
+|------|------|------|
+| **COMPLETED** | 所有步骤成功完成，验证通过 | 4 个步骤都执行并验证通过，self-audit 全部 PASS |
+| **BLOCKED_CLI_FAILURE** | CLI 工具不可用导致流程终止 | 所有 CLI 和降级路径都失败，或 circuit breaker 打开 |
+| **FAILED_VERIFICATION** | 步骤执行了但验证未通过 | Step 3 修改后验证失败，或 Step 4 发现不可修复的问题 |
+| **ABORTED_SCOPE_VIOLATION** | 超出范围或违规操作 | 修改了非目标代码，或跳过步骤，或使用禁止工具 |
+| **CANCELLED_BY_USER** | 用户主动取消流程 | 用户明确要求停止，所有步骤停止 |
+
+**终端状态不得为 COMPLETED 当：**
+- 任何步骤有未验证的结果
+- 有未解决的失败
+- circuit breaker 处于打开状态
+- 工作区状态未验证
+- 用户已取消流程（应使用 `CANCELLED_BY_USER`）
+
+## Pre/Post State Capture
+
+### Step 3 前状态基线
+
+在 Step 3 执行前，必须捕获工作区基线：
+- 当前工作目录
+- 当前分支或等同的仓库标识
+- `git status --short`
+- `git diff --no-ext-diff`
+- 相关的未跟踪文件状态
+- 允许修改的预期文件列表
+
+基线必须保留以便与执行后状态对比。
+
+### Step 3 后状态验证
+
+Step 3 完成后，必须捕获相应的执行后状态并与基线对比：
+
+1. 变更仅限于授权的工作区和预期范围
+2. 请求的实现变更已实际存在
+3. 没有意外的破坏性变更或无关修改
+4. CLI 输出与观察到的 diff 和工作区状态一致
+5. CLI 报告的任何测试、检查或生成产物实际存在或可验证完成
+
+如果 Step 3 超时或失败后可能已修改工作区，必须在重试或降级前捕获失败后状态。
+
+**未捕获基线或执行后状态**，不得产生 COMPLETED 结果，必须产生 FAILED_VERIFICATION，除非不可捕获本身就是不可恢复的 CLI 失败。
+
 ## 汇报模板
 
-## Step X 执行汇报
+### Enhanced Reporting Template
 
-| 项目 | 内容 |
-|------|------|
-| 当前步骤 | Step X |
-| CLI调用 | codex exec ... |
-| 退出码 | 0 / 124(超时) |
-| 超时降级 | 是/否 -> [降级路径] |
+最终汇报必须使用以下结构：
+
+```
+Terminal status: <COMPLETED | BLOCKED_CLI_FAILURE | FAILED_VERIFICATION | ABORTED_SCOPE_VIOLATION>
+
+Step 1: Codex CLI review
+- Attempt: <number of attempts>
+- CLI: <CLI name>
+- Exit code: <code or timeout>
+- Output present: <yes/no>
+- Output relevance: <relevant/irrelevant/incomplete>
+- Verification result: <passed/failed>
+- Fallback reason: <none or specific reason>
+
+Step 2: Codex CLI plan
+- Attempt: <number of attempts>
+- CLI: <CLI name>
+- Exit code: <code or timeout>
+- Output present: <yes/no>
+- Output relevance: <relevant/irrelevant/incomplete>
+- Verification result: <passed/failed>
+- Fallback reason: <none or specific reason>
+
+Step 3: Codex CLI execute
+- Attempt: <number of attempts>
+- CLI: <CLI name>
+- Exit code: <code or timeout>
+- Output present: <yes/no>
+- Output relevance: <relevant/irrelevant/incomplete>
+- Verification result: <passed/failed>
+- Fallback reason: <none or specific reason>
+- Pre-state baseline captured: <yes/no>
+- Postcondition verified: <yes/no>
+- Workspace changes: <summary>
+
+Step 4: MiMo Code review
+- Attempt: <number of attempts>
+- CLI: <CLI name>
+- Exit code: <code or timeout>
+- Output present: <yes/no>
+- Output relevance: <relevant/irrelevant/incomplete>
+- Verification result: <passed/failed>
+- Fallback reason: <none or specific reason>
+
+Failure summary:
+- Failure classification(s): <none or list>
+- Circuit breaker status: <closed/open/not triggered>
+- Retries used: <count by step>
+- Unresolved blocker: <none or description>
+
+Self-audit (summary — see full 13-row audit above):
+- Meaningful output present: <pass/fail>
+- Exit code accepted: <pass/fail>
+- Claims backed by evidence: <pass/fail>
+- Workspace/diff verified: <pass/fail>
+- No unrelated tools invoked: <pass/fail>
+- Retry and circuit-breaker limits respected: <pass/fail>
+- Full self-audit result: <pass/fail>
+```
+
 ### Post-Completion Self-Audit（末尾审查）
 
 **每次 4 步法结束后，必须立即执行自我审查，不可跳过。**
@@ -317,6 +510,7 @@ Self-audit correction exception: <发现的问题>; files in scope: <文件范�
 6. **Step 4 复审后是否有未处理的警告？** → Step 4 指出的问题必须进入循环
 7. **是否跳过了 Step 2 或 Step 4？** → 必须完整执行 4 个步骤
 8. **是否在 Step 3 前声明了 CLI？** → 必须先声明 "Step 3 implementation CLI: <工具和模式>"
+9. **Step 4 发现的问题是否绕过了循环直接修复？** → 必须回到 Step 2→3→4，不能直接 patch
 
 ### 触发自我迭代
 
@@ -327,33 +521,42 @@ Self-audit correction exception: <发现的问题>; files in scope: <文件范�
 3. 版本号 +1
 4. 在最终回复中向用户说明已修复的违规
 
-### 末尾审查声明（必须在最终回复中）
+9. **自迭代例外是否用于修复 Step 4 review finding？** → 自迭代例外只能用于修复流程执行违规，不能用于修复 Step 4 review finding
 
-每次 4 步法结束时，在总结中必须添加：
+### Enhanced Self-Audit
 
-| Post-Completion Self-Audit | Result | Evidence |
-|---|---|---|
-| Step 2 was technically read-only | Pass/Fail/N/A | Flag, mode, or isolation used |
-| Step 2 left the workspace unchanged | Pass/Fail/N/A | Verification performed |
-| Step 3 CLI was declared before action | Pass/Fail/N/A | Declared tool and mode |
-| CLI failure followed an explicit downgrade path | Pass/Fail/N/A | Path taken |
-| Self-audit patches were pre-declared | Pass/Fail/N/A | Exception declaration |
-| Required verification completed | Pass/Fail/N/A | Checks and results |
-| All 4 steps were executed | Pass/Fail/N/A | Step sequence completed |
-| Step 3 CLI declaration present | Pass/Fail/N/A | Declaration found |
+在汇报终端状态前，必须完成以下自我审查：
 
-有 Fail 项必须自我迭代 skill，不能跳过。每行都必须存在，不适用的用 `N/A — 原因`。
+| Audit item | Result |
+|---|---|
+| Each required step was attempted in the prescribed order | PASS / FAIL |
+| Meaningful output was present after every CLI call | PASS / FAIL |
+| Every CLI exit code was accepted or correctly classified | PASS / FAIL |
+| Every result passed the applicable verification gate | PASS / FAIL |
+| Claims in the final report are backed by CLI output or workspace evidence | PASS / FAIL |
+| Workspace and git diff state were inspected where required | PASS / FAIL |
+| Step 3 pre-state baseline was captured | PASS / FAIL / NOT APPLICABLE |
+| Step 3 postcondition was verified | PASS / FAIL / NOT APPLICABLE |
+| No unrelated or unapproved tools were invoked | PASS / FAIL |
+| Retry limits were respected | PASS / FAIL |
+| Circuit-breaker limits were respected | PASS / FAIL |
+| Fallbacks were used only when permitted | PASS / FAIL |
+| A valid terminal status was assigned | PASS / FAIL |
+| Step 4 findings were resolved through the loop mechanism (not direct patch) | PASS / FAIL |
+
+**任何一项为 FAIL，不得通过 self-audit。** 成功的 self-audit 不能覆盖失败的 CLI 验证、缺失的输出、未解决的 circuit breaker 或矛盾的工作区证据。
 
 ### skill 自迭代例外
 
-skill 文件（SKILL.md）的更新属于流程/规则变更，不走四步法——直接用 `skill_manage(action='patch')` 修改。原因：
-1. skill 是元数据/流程规范，不是功能代码
-2. four-step-enforcer 插件会拦截 skill_manage 但允许手动绕过用于自迭代
-3. 自迭代内容直接来自本次执行的违规，不需要单独审查
+skill 文件（SKILL.md）的更新仅在修复本次执行中发现的流程执行违规时适用，例如修复违反工具限制、步骤顺序、CLI 声明或循环规则的规则缺陷。
+
+如果 Step 4 对 SKILL.md 或其他目标内容提出任何可执行的问题、警告、缺陷或修正要求，这些发现必须进入 Step 2→3→4 循环，不得使用 `skill_manage(action='patch')` 直接修复。
+
+自迭代例外只能用于修复流程执行违规，不能用于绕过 Step 4 review findings。即使目标文件是 SKILL.md，也必须遵守上述循环规则。
 
 ## Loops Mechanism
 
-When Step 4 fails, the process loops back to Step 2:
+When Step 4 fails or reports any actionable finding, warning, defect, or correction request, the process loops back to Step 2:
 
 Step 1 -> Step 2 -> Step 3 -> Step 4
                 ^               |
@@ -362,10 +565,19 @@ Step 1 -> Step 2 -> Step 3 -> Step 4
 
 Maximum Loops: 10
 
+This rule applies equally when the target is SKILL.md, another skill file, documentation, configuration, or source code.
+
 ### 循环中禁止的行为
 - 禁止用 patch/write_file 直接修复 → 必须走完 Step 2→3→4
 - 禁止跳过任一 CLI 步骤
 - 禁止修改非本次循环目标的其他代码
+
+### 循环终止条件（v12.3.0 新增）
+循环在以下任一条件满足时必须终止（不等待达到最大循环数）：
+1. **Circuit breaker 打开**：全局熔断触发，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
+2. **累计 3 步骤失败**：任何步骤的输出为空、超时或无效，累计 3 次，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
+3. **所有 CLI 不可用**：Codex 和 MiMo 都认证失败或工具不可用，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
+4. **用户取消**：用户明确要求停止，立即终止，终端状态 `CANCELLED_BY_USER`
 
 ### 禁止中途汇报中断循环（v12.2.1 新增）
 Step 3 完成后必须立即进入 Step 4，**不得以"达到工具调用上限"或"需要用户确认"为由停下来汇报**。四步法是一个原子流程：
@@ -374,7 +586,19 @@ Step 3 完成后必须立即进入 Step 4，**不得以"达到工具调用上限
 - 违反此规则的"Step 3 完成"汇报等同于跳过 Step 4，按违规处理
 - 唯一允许中断的情况：所有 CLI 工具都不可用且已穷尽降级路径
 
+### Loop 2+ 修正模式（v12.2.3 新增）
+When a loop returns to Step 2 after Step 4 review:
+- Step 2 must be **ephemeral** (read-only, no file changes)
+- Step 3 must use **-s danger-full-access** (full execution power)
+- All previous CLI outputs are passed as context to the new prompt
+- Changes from previous loops are preserved and built upon
+- Loop 2+ prompt should reference the issue found in Step 4 review
+- Each loop must increment the version number in skill updates
+
 ## Version History
+- v12.3.1 (2026-07-29): Fixed loop-bypass vulnerability — "skill 自迭代例外" narrowed to process-violation-only (cannot bypass Step 4 findings loop), loop trigger widened to "actionable finding", SKILL.md explicitly subject to loop, self-audit added 14th row "Step 4 findings through loop mechanism", 审查清单 and 触发自我迭代 both added loop-bypass checks.
+- v12.3.0 (2026-07-29): Added timeout/failure hardening — Result Verification Gate, Failure Classification Matrix, Circuit Breaker, Tools-in-Scope Allowlist, Terminal Statuses, Pre/Post State Capture, Enhanced Reporting Template, Enhanced Self-Audit (13 rows), Loop Termination Conditions. MiMo复审修正6项.
+- v12.2.3 (2026-07-29): Added Loop 2+ correction mode for iterative fixes after Step 4 review — each loop must preserve changes and reference previous findings.
 - v12.2.2 (2026-07-29): Fixed long-standing naming error — skill correctly named `harness-4step` everywhere; added Naming Rules section and cross-contamination prevention rule (4-step content must live only in this skill, never copied into other skills like credential-pool-sync); removed all references to old `enforce-4-step-method` name.
 - v12.2.1 (2026-07-28): Added "禁止中途汇报中断循环" rule — Step 3 完成后必须立即进入 Step 4，不得以工具调用上限为由停下来汇报。违反等同跳过 Step 4。
 - v12.1.0 (2026-07-28): Added Windows native Codex CLI EFTYPE error section

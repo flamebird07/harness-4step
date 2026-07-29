@@ -237,18 +237,9 @@ if __name__ == "__main__":
     if not prompt: print("Need --prompt or --prompt-file", file=sys.stderr); sys.exit(1)
     r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt, timeout_seconds=a.timeout)
     # Print CLI invocation info for transparency
-    def _fmt_cmd(cmd):
-        if not cmd:
-            return ""
-        # The last element is typically the prompt; keep it readable if very long.
-        parts = [str(c) for c in cmd]
-        if len(parts[-1]) > 200:
-            tail = parts[-1]
-            parts[-1] = tail[:200] + f"...[{len(tail) - 200} more chars]"
-        return " ".join(parts)
     print(f"\n{'='*60}")
     print(f"CLI Invoked: {r.agent.upper()}")
     print(f"Step: {r.step}")
-    print(f"Command: {_fmt_cmd(r.command)}")
+    print(f"Command: {' '.join(r.command[:3])}...")
     print(f"{'='*60}\n")
     print(json.dumps(asdict(r), ensure_ascii=False, indent=2)); sys.exit(0 if r.success else 1)
