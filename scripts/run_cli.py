@@ -25,27 +25,29 @@ DEFAULT_CONFIG = {
     "step1": {
         "agent": "codex",
         "description": "Review: analyze, find root cause",
-        "timeout_seconds": 180,
+        "timeout_seconds": 120,
     },
     "step2": {
         "agent": "codex",
-        "description": "Plan: design fix approach",
-        "timeout_seconds": 180,
+        "description": "Plan: design fix approach (read-only, --ephemeral)",
+        "timeout_seconds": 120,
     },
     "step3": {
-        "agent": "mimo",
-        "description": "Execute: implement code changes",
+        "agent": "codex",
+        "description": "Execute: implement code changes (-s danger-full-access)",
         "timeout_seconds": 300,
     },
     "step4": {
-        "agent": "kimi",
-        "description": "Re-review: verify changes",
-        "timeout_seconds": 120,
+        "agent": "mimo",
+        "description": "Re-review: verify changes (fallback: Codex CLI)",
+        "timeout_seconds": 180,
     },
 }
 
 # Default config comment for new users:
-# This repo defaults to Codex/Codex/MiMo/Kimi for the 4-step harness.
+# Current 4-step method: Codex/Codex/Codex/MiMo (harness-4step v10.0.0)
+# Step 4 MiMo is currently broken on this machine (all models fail).
+# Fallback: use Codex CLI directly for Step 4.
 # To use MiMo Code (free) for ALL steps, create ~/.hermes/harness-config.yaml:
 #   step1: {agent: mimo}
 #   step2: {agent: mimo}
@@ -195,7 +197,8 @@ def verify_evidence(ev_p: Path) -> tuple[bool, str]:
 
 def print_config():
     print("=== harness-4step CLI Configuration ===")
-    print("Default: Codex/Codex/MiMo/Kimi (4-step harness contract)")
+    print("Current: Codex/Codex/Codex/MiMo (harness-4step v10.0.0)")
+    print("Step 4 MiMo is broken on this machine — fallback to Codex CLI directly.")
     print("Config file: ~/.hermes/harness-config.yaml")
     print()
     for step in ["step1","step2","step3","step4"]:
