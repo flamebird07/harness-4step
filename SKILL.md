@@ -1,13 +1,13 @@
 ---
 name: harness-4step
-description: "Harness the 4-step method: Codex CLI Review -> Codex CLI Plan -> Codex CLI Execute -> MiMo Code / Kimi CLI Re-review"
-version: 12.5.0
+description: "Harness the 4-step method: Codex CLI Review -> Codex CLI Plan -> Codex CLI Execute -> User-specified CLI Re-review (绑定固定，不自动降级)"
+version: 12.6.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [enforcement, workflow, rules, compliance, timeout]
+    tags: [enforcement, workflow, rules, compliance, timeout, cli-binding]
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
@@ -55,14 +55,21 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 
 ## The 4-Step Method
 
-**MANDATORY for all code changes:**
+**MANDATORY for all code changes.**
 
-| Step | Agent | Real CLI | Timeout | Fallback | 限制 |
-|------|-------|----------|---------|----------|------|
-| Step 1 | **Codex CLI** | codex exec | 120s | 精简提示重试，加 tail -60 | 不能改代码 |
-| Step 2 | **Codex CLI** | codex exec (read-only) | 120s | 同上 | **不能改代码**，必须用 --ephemeral + 输出方案不改文件 |
-| Step 3 | **Codex CLI** | codex exec -s danger-full-access | 120s | 写 prompt 文件再 exec / 分段执行 | 不能做方案/审查 |
-| Step 4 | **MiMo Code / Kimi CLI** | mimo run / kimi -p | 180s | Codex CLI 短英文提示；要求用户指定 | 不能改代码 |
+**核心原则：每步 CLI 绑定后不可更改。** 用户设定后，该步的 CLI 工具永久固定，超时只重试不降级，不自动匹配历史使用过的其他 CLI。
+
+| Step | Agent（固定绑定） | Real CLI | Timeout | 超时策略 | 限制 |
+|------|-----------------|----------|---------|---------|------|
+| Step 1 | **Codex CLI**（不可更改） | codex exec | 120s | 精简 prompt 重试，仍超时则继续精简重试，不换工具 | 不能改代码 |
+| Step 2 | **Codex CLI**（不可更改） | codex exec --ephemeral | 120s | 同上 | **不能改代码**，必须用 --ephemeral + 输出方案不改文件 |
+| Step 3 | **Codex CLI**（不可更改） | codex exec -s danger-full-access | 120s | 写 prompt 文件再 exec / 分段执行，不换工具 | 不能做方案/审查 |
+| Step 4 | **用户指定**（Kimi CLI / MiMo Code，设定后绑定不更改） | kimi -p / mimo run | 180s | 精简 prompt 重试，仍超时则继续精简重试，不换工具，不降级 | 不能改代码 |
+
+**绑定规则：**
+- Step 4 的 CLI 由用户指定（如「Step 4 用 Kimi CLI」），一旦指定，**不得自动匹配历史使用记录**
+- 不得在 Step 4 超时后擅自降级到 Codex CLI 或其他未指定的工具
+- 如需更改 Step 4 的 CLI，必须用户明确重新指定
 
 ## Windows 原生 Codex CLI EFTYPE 错误（本地执行失败）
 
@@ -170,18 +177,15 @@ CLI execution: SSH to 10.0.0.50 (PowerShell转义降级 → 本地batch文件方
 
 ### 通用规则
 1. 第一次超时 -> 精简 prompt 重试一次
-2. 第二次超时 -> 执行降级路径
-3. 在汇报中注明超时和降级
+2. 第二次超时 -> 继续精简 prompt 重试，**不降级到其他工具**
+3. 在汇报中注明超时和重试情况
+4. **关键约束**：当用户明确指定某步的 CLI 工具（如 Step 4 用 Kimi CLI），**永远不降级到其他工具**
 
-### Step 1/2: Codex CLI 超时
-精简版避免超时：
-  codex exec -m gpt-5.6-luna --dangerously-bypass-approvals-and-sandbox --ephemeral "简短审查" 2>&1 | tail -60
-
-**Step 2 技术只读保障：** 必须使用 `--ephemeral` 标志（沙箱环境，不保留工作区改动）。执行后必须验证 `git status` 无变化；若有改动则 Step 2 失败，不可静默保留。
-
-- 不要用 delegate_task 冒充 Codex
-- 不要手工写审查报告
-- Step 2 输出方案文字，不调用 apply/edit 工具
+### 超时处理优先级
+1. **用户指定工具优先**：用户明确指定的 CLI 必须一直尝试，直至工具完全不可用（如命令找不到、EFTYPE）
+2. **精简提示为重**：每次超时后，必须精简提示内容再重试，不得直接放弃
+3. **如实报告状态**：当工具完全不可用时（如 Kimi CLI 完全无法启动），报告工具不可用阻塞，**不视为流程违规**
+4. **不可自动匹配**：不得自动匹配历史中使用过的其他 CLI（如之前用过 MiMo 就自动切换）
 
 ### MiMo CLI 语法要点（Windows 环境已验证）
 
@@ -277,21 +281,19 @@ print(r.stdout)
 - 降级后仍需要验证结果
 - 降级不是跳过步骤，而是换工具完成同一件事
 
-### Step 4: MiMo Code / Kimi CLI 超时
+### Step 4: 用户指定 CLI 超时
 
-**MiMo Code 超时降级路径（按顺序）：**
-1. 短英文提示 + timeout 180s 重试一次
-2. 仍失败 → **直接降级到 Codex CLI 复审**（短英文提示）
-3. Codex CLI 也不可用 → 才允许人工验证
+**当用户已明确配置 Step 4 使用特定工具（如 Kimi CLI）：**
+1. 第一次超时 -> 精简 prompt 重试一次（timeout 保持 180s）
+2. 第二次超时 -> 再次精简 prompt 重试，**不得擅自降级到其他工具**
+3. 仍超时 -> 如实报告工具状态：「Kimi CLI 已超时 2 次，无法完成 Step 4 复审」
+4. **用户约束**：如果用户明确说了「不能降级」，则停止所有降级尝试，如实报告阻塞
 
-**Kimi CLI 超时降级路径（按顺序）：**
-1. 精简 prompt + timeout 120s 重试一次
-2. 仍失败 → **降级到 Codex CLI 复审**（短英文提示）
-3. 用户也可明确要求指定 Kimi CLI 为 Step 4 工具
-
-**降级必须记录：** 在汇报中注明「MiMo Code 超时 → Codex CLI 降级」或「Kimi CLI 超时 → Codex CLI 降级」。
-
-- 强制用英文简短提示
+**禁止行为：**
+- ❌ 自动切换到历史中使用过的其他 CLI（如 MiMo Code）
+- ❌ 超时后未经用户同意直接降级到 Codex CLI
+- ❌ 以「提高成功率」为由忽略用户指定的 CLI
+- ❌ 声称「Step 4 完成」但实际用了未授权的工具
 
 ### 降级路径必须声明
 CLI 失败后（包括认证错误、HTTP 403），必须先明确声明降级路径才能继续：
@@ -398,18 +400,18 @@ Step 2: Codex CLI timed out (exit 124, empty output)
 
 | 失败类型 | 判断依据 | 是否可重试 | 是否可降级 | 是否终止流程 |
 |---------|---------|-----------|-----------|------------|
-| **超时** | exit 124 或 timeout 异常 | 是（精简 prompt 重试 1 次） | 是（降级路径） | 否（2 次后才终止） |
-| **空输出** | exit 0 但 stdout 为空 | 是（重试 1 次） | 是（降级路径） | 否（2 次后才终止） |
-| **认证失败** | HTTP 401/403、auth error | 否（直接降级） | 是（换 CLI） | 如果所有 CLI 都认证失败 |
-| **可执行文件失败** | EFTYPE、command not found、Missing dependency | 是（修复后重试） | 是（降级路径） | 如果修复也失败 |
-| **无效输出** | 输出存在但内容不相关（如帮助信息、错误日志） | 是（精简 prompt 重试） | 是（降级路径） | 否（2 次后才终止） |
+| **超时** | exit 124 或 timeout 异常 | 是（精简 prompt 重试，次数不限） | 否（**禁止降级到其他工具**） | 否（除非工具完全不可用） |
+| **空输出** | exit 0 但 stdout 为空 | 是（重试，次数不限） | 否 | 否（除非工具完全不可用） |
+| **认证失败** | HTTP 401/403、auth error | 是（重新认证后重试） | 否（用户指定的工具必须坚持用） | 如果用户明确不可降级则终止 |
+| **可执行文件失败** | EFTYPE、command not found、Missing dependency | 是（修复后重试） | 否 | 是（工具完全不可用则终止） |
+| **无效输出** | 输出存在但内容不相关（如帮助信息、错误日志） | 是（精简 prompt 重试，次数不限） | 否 | 否（除非工具完全不可用） |
 
-**重试规则**：
-- 同一失败类型最多重试 1 次
-- 重试后仍属于同一失败类型 → 切换到降级路径
-- 降级后仍失败 → 打开 circuit breaker（见下一节）
+**重试规则：**
+- 用户指定的 CLI 工具，**不限次数重试**，直至工具完全不可用
+- 每次重试必须精简提示内容
+- 不得在任何情况下自动切换到未指定的 CLI
 
-**跨步骤失败累计**：如果累计 3 个步骤都因超时/空输出/无效输出失败，整体流程必须终止，终端状态为 `BLOCKED_CLI_FAILURE`。
+**跨步骤失败累计：** 如果累计 3 个步骤的同一指定 CLI 都超时，如实报告整体阻塞，**不视为流程违规**
 
 ## Circuit Breaker
 
@@ -454,18 +456,21 @@ Step 2: Codex CLI timed out (exit 124, empty output)
 
 | 状态 | 含义 | 条件 |
 |------|------|------|
-| **COMPLETED** | 所有步骤成功完成，验证通过 | 4 个步骤都执行并验证通过，self-audit 全部 PASS |
-| **BLOCKED_CLI_FAILURE** | CLI 工具不可用导致流程终止 | 所有 CLI 和降级路径都失败，或 circuit breaker 打开 |
-| **FAILED_VERIFICATION** | 步骤执行了但验证未通过 | Step 3 修改后验证失败，或 Step 4 发现不可修复的问题 |
-| **ABORTED_SCOPE_VIOLATION** | 超出范围或违规操作 | 修改了非目标代码，或跳过步骤，或使用禁止工具 |
+| **COMPLETED** | 所有步骤成功完成，验证通过 | 4 个步骤都按用户指定的 CLI 执行并验证通过 |
+| **BLOCKED_CLI_FAILURE** | CLI 工具不可用导致流程终止 | 指定的 CLI 完全不可用（如 EFTYPE、命令找不到），且无法修复 |
+| **FAILED_VERIFICATION** | 步骤执行了但验证未通过 | Step 3 修改后验证失败，或 Step 4 复审发现问题 |
+| **ABORTED_SCOPE_VIOLATION** | 超出范围或违规操作 | 修改了非目标代码，或跳过步骤，或使用禁止的工具 |
 | **CANCELLED_BY_USER** | 用户主动取消流程 | 用户明确要求停止，所有步骤停止 |
+| **BLOCKED_TIMEOUT_RETRY** | 多次超时但仍可重试 | 用户指定的 CLI 超时，但工具本身可用，等待后续重试 |
+
+**关键例外：**
+- 因 CLI 工具本身不可用（如 EFTYPE、command not found）导致的阻塞，**视为工具故障阻塞，不视为流程违规**
+- 用户指定的 CLI 多次超时但工具本身可用时，应持续重试，**不得直接终止流程**
 
 **终端状态不得为 COMPLETED 当：**
-- 任何步骤有未验证的结果
-- 有未解决的失败
-- circuit breaker 处于打开状态
-- 工作区状态未验证
-- 用户已取消流程（应使用 `CANCELLED_BY_USER`）
+- 任何步骤使用了未授权的 CLI 工具
+- 未按用户指定的 CLI 执行步骤
+- 自动切换到了历史中使用过的其他 CLI
 
 ## Pre/Post State Capture
 
@@ -595,6 +600,8 @@ Self-audit (summary — see full 13-row audit above):
 | Audit item | Result |
 |---|---|
 | Each required step was attempted in the prescribed order | PASS / FAIL |
+| 所有步骤使用了用户指定的 CLI 工具（无自动切换） | PASS / FAIL |
+| 超时后未擅自降级到其他工具 | PASS / FAIL |
 | Meaningful output was present after every CLI call | PASS / FAIL |
 | Every CLI exit code was accepted or correctly classified | PASS / FAIL |
 | Every result passed the applicable verification gate | PASS / FAIL |
@@ -603,13 +610,11 @@ Self-audit (summary — see full 13-row audit above):
 | Step 3 pre-state baseline was captured | PASS / FAIL / NOT APPLICABLE |
 | Step 3 postcondition was verified | PASS / FAIL / NOT APPLICABLE |
 | No unrelated or unapproved tools were invoked | PASS / FAIL |
-| Retry limits were respected | PASS / FAIL |
-| Circuit-breaker limits were respected | PASS / FAIL |
-| Fallbacks were used only when permitted | PASS / FAIL |
-| A valid terminal status was assigned | PASS / FAIL |
+| Retry limits were respected（用户指定工具无限重试） | PASS / FAIL |
+| 因 CLI 工具本身故障导致的阻塞已正确标记为 BLOCKED_CLI_FAILURE | PASS / FAIL |
 | Step 4 findings were resolved through the loop mechanism (not direct patch) | PASS / FAIL |
 
-**任何一项为 FAIL，不得通过 self-audit。** 成功的 self-audit 不能覆盖失败的 CLI 验证、缺失的输出、未解决的 circuit breaker 或矛盾的工作区证据。
+**任何与 CLI 绑定和降级相关的项为 FAIL，不得通过 self-audit。**
 
 ### skill 自迭代例外
 
@@ -661,6 +666,13 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v12.6.0 (2026-07-30): 重大迭代，完全满足用户 CLI 绑定诉求：
+  1. **每步 CLI 绑定不可更改**：用户指定后，该步 CLI 永久固定
+  2. **超时只重试不降级**：精简提示重试，禁止自动切换到其他工具
+  3. **禁止自动匹配历史**：不得自动切换到之前用过的 CLI（如 MiMo）
+  4. **工具故障不算违规**：CLI 本身不可用（EFTYPE、命令找不到）标记为 BLOCKED_CLI_FAILURE，不视为流程违规
+  5. **Step 4 用户指定优先**：用户指定的 Step 4 CLI 必须一直用，直至完全不可用
+  6. **重试机制**：用户指定的 CLI 可无限次精简重试
 - v12.5.0 (2026-07-30): Updated MiMo CLI status (verified working with `xiaomi/mimo-v2.5`). Added Windows PATH pitfall (`export PATH` needed). Added MiMo timeout mitigation: per-file split execution technique. Added Step 3 user override: user can designate MiMo Code CLI for Step 3. Updated `references/mimo-cli-login.md` with current model status table and split-file execution guide.
 - v12.4.0 (2026-07-30): Added Kimi CLI as Step 4 alternative (MiMo Code / Kimi CLI). Added Kimi CLI syntax section with long-prompt passing techniques (batch file + Python subprocess). Updated 4-Step Method table, Step 4 timeout handling, and Tools-in-Scope Allowlist to reflect Kimi CLI support.
 - v12.3.1 (2026-07-29): Fixed loop-bypass vulnerability — "skill 自迭代例外" narrowed to process-violation-only (cannot bypass Step 4 findings loop), loop trigger widened to "actionable finding", SKILL.md explicitly subject to loop, self-audit added 14th row "Step 4 findings through loop mechanism", 审查清单 and 触发自我迭代 both added loop-bypass checks.
