@@ -1,15 +1,15 @@
-"""four-step-enforcer — Harness 4-Step enforcement plugin.
+"""four-step-enforcer — Harness 4-Step enforcement plugin (v3).
 
-Enforces the "4-step harness" rule at the tool-call level:
-  1. When delegate_task completes successfully → mark Step 1 as done for this session
-  2. When write_file/patch is invoked → block unless delegate_task was completed first
+Enforces real CLI execution via run_cli.py at the tool-call level:
+  1. When run_cli.py completes successfully → mark step_done for this session
+  2. When write_file/patch/skill_manage is invoked → block unless run_cli.py succeeded
 
-This replaces the old skill-only approach (which LLMs could ignore) with
-a hard technical gate that blocks tool calls at the infrastructure level.
+This replaces delegate_task-based marking (v2) with real CLI execution tracking.
+delegate_task is allowed but does NOT mark step_done — only run_cli.py does.
 
 Architecture:
-  - pre_tool_call hook: intercepts write_file/patch, checks state, blocks or allows
-  - post_tool_call hook: observes delegate_task success → marks step1_done
+  - pre_tool_call hook: intercepts write_file/patch/skill_manage, checks state, blocks or allows
+  - post_tool_call hook: observes run_cli.py success → marks step_done
   - on_session_start/end: lifecycle hooks for cleanup
   - State: in-memory dict keyed by session_id with TTL-based expiry
 
@@ -22,7 +22,7 @@ Exemptions (checked in order):
   1. Plugin disabled via config
   2. Tool not in target list (write_file, patch, skill_manage)
   3. No session identifier available → bypass (degraded mode)
-  4. delegate_task already completed successfully (step1_done)
+  4. run_cli.py already completed successfully (step_done)
   5. Explicit exemption via config (exempt_tools, exempt_goal_patterns)
 
 Memory management:
@@ -53,6 +53,13 @@ _DEFAULT_PRUNE_INTERVAL_SECONDS = 30
 # Tools that are blocked until Step 1 (delegate_task) is completed.
 # skill_manage is included because write_file/patch sub-actions modify code.
 _BLOCKED_TOOLS: Set[str] = {"write_file", "patch", "skill_manage"}
+
+def _is_run_cli_call(args: Any) -> bool:
+    """Check if a terminal call is executing run_cli.py."""
+    if not isinstance(args, dict):
+        return False
+    cmd = str(args.get("command", "") or "")
+    return "run_cli.py" in cmd and "--step" in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +302,11 @@ def _on_pre_tool_call(
 
     # --- delegate_task: allow, success tracked in post_tool_call ---
     if tool_name == "delegate_task":
-        return None  # Always allow delegate_task
+        return None
+
+    # --- terminal with run_cli.py: allow (status checked in post_tool_call) ---
+    if tool_name == "terminal" and _is_run_cli_call(args):
+        return None
 
     # --- write_file/patch: check Step 1 ---
     if tool_name in _BLOCKED_TOOLS:
@@ -312,16 +323,18 @@ def _on_pre_tool_call(
             message = (
                 f"🚫 BLOCKED by four-step-enforcer: "
                 f"Cannot call '{blocked_tool}' before completing Step 1.\n\n"
-                f"The 4-step harness requires that Hermes first delegates "
-                f"analysis/planning via delegate_task before modifying any code.\n\n"
+                f"The 4-step harness requires real CLI execution via run_cli.py "
+                f"before modifying any code.\n\n"
                 f"To proceed:\n"
-                f"1. Call delegate_task to delegate Step 1 (review/analysis)\n"
-                f"2. Then retry this {blocked_tool} call\n\n"
+                f"1. Run: python scripts/run_cli.py --step step1 --task-id <id> "
+                f"--workspace <path> --prompt '<prompt>'\n"
+                f"2. Verify evidence: python scripts/run_cli.py --step step1 "
+                f"--task-id <id> --workspace . --verify-only\n"
+                f"3. Then retry this {blocked_tool} call\n\n"
                 f"Session: {session_key[:16]}... | "
-                f"Blocks so far: {state.blocked_count} | "
-                f"Delegates so far: {state.delegate_count}\n\n"
-                f"To exempt this tool: add it to four-step-enforcer config "
-                f"exempt_tools, or set FOUR_STEP_ENFORCER_ENABLED=0"
+                f"Blocks so far: {state.blocked_count}\n\n"
+                f"To exempt: add to config exempt_tools or "
+                f"set FOUR_STEP_ENFORCER_ENABLED=0"
             )
 
             logger.warning(
@@ -358,6 +371,32 @@ def _on_post_tool_call(
     if not _is_enabled():
         return
 
+    # --- terminal with run_cli.py: only mark done on SUCCESS ---
+    if tool_name == "terminal" and _is_run_cli_call(args):
+        session_key = _resolve_session_key(session_id, task_id, args)
+        if session_key is None:
+            return
+        # Only mark step done if terminal call succeeded
+        _success_statuses = ("success", "completed", "ok")
+        is_success = (
+            status in _success_statuses
+            and not error_type
+            and not (error_message and error_message.strip())
+        )
+        if not is_success:
+            logger.debug("four-step-enforcer: run_cli.py call failed (status=%s), not marking step done", status)
+            return
+        state = _get_or_create_state(session_key)
+        cmd = str((args or {}).get("command", "") or "")
+        for step_name in ["step1", "step2", "step3", "step4"]:
+            if f"--step {step_name}" in cmd or f"--step={step_name}" in cmd:
+                state.step1_done = True
+                state.step1_tool_name = f"run_cli.py:{step_name}"
+                logger.info("four-step-enforcer: %s completed via run_cli.py (verified success) for session %s",
+                    step_name, session_key[:16])
+                break
+        return
+
     if tool_name == "delegate_task":
         session_key = _resolve_session_key(session_id, task_id, args)
         if session_key is None:
@@ -375,20 +414,13 @@ def _on_post_tool_call(
             and not error_type
             and not (error_message and error_message.strip())
         )
-        if is_success:
-            state.step1_done = True
-            state.step1_tool_name = "delegate_task"
-            logger.info(
-                "four-step-enforcer: Step 1 completed for session %s "
-                "(delegate #%d, status=%s)",
-                session_key[:16], state.delegate_count, status,
-            )
-        else:
-            logger.debug(
-                "four-step-enforcer: delegate_task did NOT mark step1_done "
-                "for session %s (status=%s, error_type=%s)",
-                session_key[:16], status, error_type,
-            )
+        # delegate_task is allowed but does NOT mark step1_done anymore
+        # Real CLI execution via run_cli.py is required for step completion
+        logger.debug(
+            "four-step-enforcer: delegate_task tracked but does NOT mark step_done "
+            "for session %s (use run_cli.py instead)",
+            session_key[:16],
+        )
 
 
 def _on_session_start(

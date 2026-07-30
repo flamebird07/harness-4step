@@ -14,7 +14,8 @@ import time
 # ---------------------------------------------------------------------------
 # Load the plugin module (hyphenated package name needs special handling)
 # ---------------------------------------------------------------------------
-PLUGIN_DIR = os.path.join(os.path.expanduser("~"), ".hermes", "plugins", "four-step-enforcer")
+# Use relative path from test file location
+PLUGIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)))
 init_path = os.path.join(PLUGIN_DIR, "__init__.py")
 
 with open(init_path, "r", encoding="utf-8") as f:
@@ -93,10 +94,10 @@ def test_write_file_blocked_before_delegate(ctx):
 
 
 # ---------------------------------------------------------------------------
-# Test 3: delegate_task marks step1_done (via post_tool_call)
+# Test 3: delegate_task does NOT mark step1_done (use run_cli.py instead)
 # ---------------------------------------------------------------------------
 def test_delegate_task_marks_step1(ctx):
-    print("Test 3: delegate_task marks step1_done (via post_tool_call)...")
+    print("Test 3: delegate_task does NOT mark step1_done (use run_cli.py instead)...")
     post_hook = ctx.hooks["post_tool_call"][0]
     
     result = post_hook(
@@ -111,16 +112,16 @@ def test_delegate_task_marks_step1(ctx):
     # post_tool_call returns None always, but should have set state
     state = _session_states.get("test-session-1")
     assert state is not None, "Session state should exist"
-    assert state.step1_done is True, "step1_done should be True after successful delegate_task"
+    assert state.step1_done is False, "step1_done should NOT be set by delegate_task (use run_cli.py)"
     assert state.delegate_count == 1, f"delegate_count should be 1, got {state.delegate_count}"
-    print("  ✅ PASS: delegate_task correctly marks step1_done")
+    print("  ✅ PASS: delegate_task correctly does NOT mark step1_done")
 
 
 # ---------------------------------------------------------------------------
-# Test 4: write_file allowed after delegate_task
+# Test 4: write_file blocked after delegate_task (delegate no longer marks step_done)
 # ---------------------------------------------------------------------------
 def test_write_file_allowed_after_delegate(ctx):
-    print("Test 4: write_file allowed after delegate_task...")
+    print("Test 4: write_file blocked after delegate_task (delegate no longer marks step_done)...")
     hook = ctx.hooks["pre_tool_call"][0]
     
     result = hook(
@@ -129,8 +130,9 @@ def test_write_file_allowed_after_delegate(ctx):
         session_id="test-session-1",
         task_id="",
     )
-    assert result is None, f"write_file should be allowed after delegate_task, got {result}"
-    print("  ✅ PASS: write_file correctly allowed after delegate_task")
+    assert result is not None and result.get("action") == "block", \
+        f"write_file should be blocked after delegate_task (only run_cli.py marks step_done), got {result}"
+    print("  ✅ PASS: write_file correctly blocked after delegate_task")
 
 
 # ---------------------------------------------------------------------------
@@ -167,14 +169,14 @@ def test_session_isolation(ctx):
     )
     assert result is not None, "session-2 should be blocked (no delegate_task)"
     
-    # session-1 has delegate_task, should be allowed
+    # session-1 has delegate_task but delegate no longer marks step_done
     result = hook(
         tool_name="write_file",
         args=make_args(path="test.js", content="test"),
         session_id="test-session-1",
         task_id="",
     )
-    assert result is None, "session-1 should be allowed (has delegate_task)"
+    assert result is not None, "session-1 should be blocked (delegate_task no longer marks step_done)"
     print("  ✅ PASS: Sessions are correctly isolated")
 
 
@@ -208,14 +210,15 @@ def test_session_id_none_fallback(ctx):
         error_message="",
     )
     
-    # Now write_file with same task_id should be allowed
+    # Now write_file with same task_id should still be blocked
+    # (delegate_task no longer marks step_done, only run_cli.py does)
     result = pre_hook(
         tool_name="write_file",
         args=make_args(path="test.js", content="test"),
         session_id="",
         task_id="task-123",
     )
-    assert result is None, "write_file should be allowed after delegate with same task_id"
+    assert result is not None, "write_file should be blocked (delegate_task no longer marks step_done)"
     print("  ✅ PASS: session_id=None correctly falls back to task_id")
 
 
@@ -439,10 +442,11 @@ def main():
     print("=" * 60)
     print()
     print("Summary:")
-    print("  - write_file/patch/skill_manage blocked before delegate_task")
-    print("  - delegate_task marks step1_done (only with explicit success status)")
-    print("  - Empty status or error does NOT mark step1_done")
-    print("  - write_file/patch allowed after delegate_task")
+    print("  - write_file/patch/skill_manage blocked before run_cli.py")
+    print("  - run_cli.py marks step_done (only on success)")
+    print("  - delegate_task does NOT mark step_done (use run_cli.py instead)")
+    print("  - Empty status or error does NOT mark step_done")
+    print("  - write_file/patch blocked after delegate_task (only run_cli.py unlocks)")
     print("  - Sessions are isolated")
     print("  - session_id=None falls back to task_id")
     print("  - Other tools unaffected")
