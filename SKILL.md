@@ -1,7 +1,7 @@
 ---
 name: harness-4step
-description: "Harness the 4-step method: Codex CLI Review -> Codex CLI Plan -> Codex CLI Execute -> User-specified CLI Re-review (绑定固定，不自动降级)"
-version: 12.6.0
+description: "Harness the 4-step method: Codex CLI Review -> Kimi CLI Plan -> Codex CLI Execute -> Kimi CLI Re-review (绑定固定，不自动降级)"
+version: 12.9.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,12 +11,12 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v12.3.1 — Loop-Bypass Prevention + Self-Audit Hardening)
+# Harness 4-Step Method (v12.9.0 — Self-Audit Gate + Skill Name Conflict Fix)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
 - All references in skill metadata, docs, memory, and other skills MUST use `harness-4step`. Never use the old name.
-- The 4-step method rules belong ONLY in this skill. Do NOT copy/paste 4-step rules, Step descriptions, MiMo/Codex CLI instructions, or Post-Completion Self-Audit templates into other skills (e.g. credential-pool-sync, bill-manager, etc.) — cross-contamination causes drift and confusion. Reference this skill instead.
+- The 4-step method rules belong ONLY in this skill. Do NOT copy/paste 4-step rules, Step descriptions, Codex/Kimi CLI instructions, or Post-Completion Self-Audit templates into other skills (e.g. credential-pool-sync, bill-manager, etc.) — cross-contamination causes drift and confusion. Reference this skill instead.
 
 ### 技能重命名后清理清单（Pitfall）
 
@@ -51,7 +51,7 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 
 ## Core Principle
 
-**Role label != Execution.** Real CLI execution requires calling the actual tool binary — codex exec, mimo run, or kimi -p. No delegating the task to a subagent and calling that "CLI execution." This skill harnesses the structured workflow to prevent process violations.
+**Role label != Execution.** Real CLI execution requires calling the actual tool binary — codex exec or kimi -p. No delegating the task to a subagent and calling that "CLI execution." This skill harnesses the structured workflow to prevent process violations.
 
 ## The 4-Step Method
 
@@ -62,14 +62,14 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 | Step | Agent（固定绑定） | Real CLI | Timeout | 超时策略 | 限制 |
 |------|-----------------|----------|---------|---------|------|
 | Step 1 | **Codex CLI**（不可更改） | codex exec | 120s | 精简 prompt 重试，仍超时则继续精简重试，不换工具 | 不能改代码 |
-| Step 2 | **Codex CLI**（不可更改） | codex exec --ephemeral | 120s | 同上 | **不能改代码**，必须用 --ephemeral + 输出方案不改文件 |
+| Step 2 | **Kimi CLI**（不可更改） | kimi -p | 120s | 同上 | **不能改代码**，只输出方案不改文件 |
 | Step 3 | **Codex CLI**（不可更改） | codex exec -s danger-full-access | 120s | 写 prompt 文件再 exec / 分段执行，不换工具 | 不能做方案/审查 |
-| Step 4 | **用户指定**（Kimi CLI / MiMo Code，设定后绑定不更改） | kimi -p / mimo run | 180s | 精简 prompt 重试，仍超时则继续精简重试，不换工具，不降级 | 不能改代码 |
+| Step 4 | **Kimi CLI**（不可更改） | kimi -p | 180s | 精简 prompt 重试，仍超时则继续精简重试，不换工具，不降级 | 不能改代码 |
 
 **绑定规则：**
-- Step 4 的 CLI 由用户指定（如「Step 4 用 Kimi CLI」），一旦指定，**不得自动匹配历史使用记录**
-- 不得在 Step 4 超时后擅自降级到 Codex CLI 或其他未指定的工具
-- 如需更改 Step 4 的 CLI，必须用户明确重新指定
+- Step 2 和 Step 4 的 CLI 是 **Kimi CLI**，一旦指定，**不得自动匹配历史使用记录**
+- 不得在超时后擅自降级到其他 CLI
+- 如需更改 CLI，必须用户明确重新指定
 
 ## Windows 原生 Codex CLI EFTYPE 错误（本地执行失败）
 
@@ -185,51 +185,7 @@ CLI execution: SSH to 10.0.0.50 (PowerShell转义降级 → 本地batch文件方
 1. **用户指定工具优先**：用户明确指定的 CLI 必须一直尝试，直至工具完全不可用（如命令找不到、EFTYPE）
 2. **精简提示为重**：每次超时后，必须精简提示内容再重试，不得直接放弃
 3. **如实报告状态**：当工具完全不可用时（如 Kimi CLI 完全无法启动），报告工具不可用阻塞，**不视为流程违规**
-4. **不可自动匹配**：不得自动匹配历史中使用过的其他 CLI（如之前用过 MiMo 就自动切换）
-
-### MiMo CLI 语法要点（Windows 环境已验证）
-
-> ✅ 当前状态：MiMo Code CLI 已登录可用。Provider: MiMo，使用 `xiaomi/mimo-v2.5` 模型。`mimo providers login` → 选 MiMo (推荐) → 浏览器认证 → 粘贴 code 完成登录。详见 `references/mimo-cli-login.md`。
->
-> **Windows PATH 坑**：`mimo` 不在默认 PATH 中。需 `export PATH="$PATH:/c/Users/Administrator/AppData/Roaming/npm"` 后才能调用。
->
-> **超时处理**：MiMo 对大文件修改容易超时（180s）。**按文件分拆执行**：一次只让 MiMo 改一个文件，prompt 尽量简短（<2000 字符），3个文件分3次调用即可成功。
-
-**基本语法**：
-
-```bash
-mimo run --model <provider/model> <message>
-```
-- `message` 是 **positional argument**（位置参数），直接在选项后输入即可
-- `--command` 是用于 predefined 命令（`init`, `review`, `dream`, `goal` 等），不能用于自由消息
-
-**模型命名规则**：`provider/model` 格式，如 `anthropic/claude-sonnet-4-5`
-
-**可用模型列表**：`mimo models` 列出所有可用模型
-
-**认证管理**：
-```bash
-mimo providers list      # 列出已配置的 credentials
-mimo providers whoami    # 显示当前登录状态
-mimo providers login     # 登录 MiMo 服务
-mimo providers logout    # 退出登录
-```
-
-**API Key 有效性验证**（绕过 mimo 直接测试）：
-```bash
-curl -s -w "%{http_code}" https://api.anthropic.com/v1/messages \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-4-20250514","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
-```
-- 401 = key 无效/过期
-- 200/201 = key 正常
-
-**不登录的限制**：
-- `mimo/mimo-auto` → 需要登录 MiMo 服务
-- `xiaomi/mimo-v2.5` / `xiaomi/mimo-v2.5-pro` → 需要登录 MiMo 服务
-- `anthropic/claude-*` → 需要有效 `ANTHROPIC_API_KEY` 环境变量
+4. **不可自动匹配**：不得自动匹配历史中使用过的其他 CLI
 
 ### Kimi CLI 语法要点（Windows 环境已验证）
 
@@ -272,6 +228,12 @@ print(r.stdout)
 - Kimi 的超时行为：180s 超时后命令被强制终止，但部分输出可能已写入 stdout
 - `kimi --version` 验证安装：v0.28.0 可用
 - Kimi CLI 没有 `--ephemeral` 或 `--skip-git-repo-check` 等标志，只读审查时需自行确保不修改文件
+- **Windows 上 kimi 是 `.cmd` 批处理包装器**：Python `subprocess.run(['kimi', '-p', prompt])` 会报 `FileNotFoundError`，因为 `.cmd` 文件不是可执行映像。必须用 `shell=True` 或传完整路径 `kimi.cmd`。示例：
+  ```python
+  import subprocess
+  r = subprocess.run(['kimi.cmd', '-p', prompt], capture_output=True, text=True,
+                     timeout=180, encoding='utf-8', errors='replace', shell=True)
+  ```
 
 ### Step 3: Codex CLI 超时
 降级路径：
@@ -281,16 +243,16 @@ print(r.stdout)
 - 降级后仍需要验证结果
 - 降级不是跳过步骤，而是换工具完成同一件事
 
-### Step 4: 用户指定 CLI 超时
+### Step 4: Kimi CLI 超时
 
-**当用户已明确配置 Step 4 使用特定工具（如 Kimi CLI）：**
+**当用户已明确配置 Step 4 使用 Kimi CLI：**
 1. 第一次超时 -> 精简 prompt 重试一次（timeout 保持 180s）
 2. 第二次超时 -> 再次精简 prompt 重试，**不得擅自降级到其他工具**
 3. 仍超时 -> 如实报告工具状态：「Kimi CLI 已超时 2 次，无法完成 Step 4 复审」
 4. **用户约束**：如果用户明确说了「不能降级」，则停止所有降级尝试，如实报告阻塞
 
 **禁止行为：**
-- ❌ 自动切换到历史中使用过的其他 CLI（如 MiMo Code）
+- ❌ 自动切换到历史中使用过的其他 CLI
 - ❌ 超时后未经用户同意直接降级到 Codex CLI
 - ❌ 以「提高成功率」为由忽略用户指定的 CLI
 - ❌ 声称「Step 4 完成」但实际用了未授权的工具
@@ -315,7 +277,7 @@ Step 3 implementation CLI: none — <原因和批准的替代方案>
 第一个 Step 3 操作之前未出现此声明，则 Step 3 视为未启动。事后声明不纠正违规。
 
 ### Step 3 执行方法约束（v12.3.2 新增）
-Step 3 的修改**默认通过 Codex CLI -s danger-full-access 执行**。用户可明确指定使用 MiMo Code CLI 替代（需在消息中声明 "Step 3 用 MiMo Code"）。禁止以下行为：
+Step 3 的修改**默认通过 Codex CLI -s danger-full-access 执行**。禁止以下行为：
 - ❌ 用 bash/terminal 直接调用 `patch`、`write_file` 来修改代码
 - ❌ 用 `delegate_task` 返回文本冒充 CLI 执行结果
 - ❌ 用 `skill_manage(action='patch')` 绕过循环（自迭代例外仅限流程违规修复）
@@ -338,7 +300,7 @@ Self-audit correction exception: <发现的问题>; files in scope: <文件范�
 当使用 delegate_task 时，必须在 context 字段追加以下约束：
 
 ## 4步法约束（必须遵守）
-1. 必须使用真实 CLI 工具（codex exec / mimo run / kimi -p），不能模拟
+1. 必须使用真实 CLI 工具（codex exec / kimi -p），不能模拟
 2. Step 2 只出方案不修改代码
 3. 不能手工创建 evidence.json
 4. 不能在 goal 字段标注角色但不调用对应 CLI
@@ -441,9 +403,9 @@ Step 2: Codex CLI timed out (exit 124, empty output)
 | 步骤 | 允许的工具 | 禁止的工具 |
 |------|-----------|-----------|
 | Step 1 | terminal（运行 codex exec）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
-| Step 2 | terminal（运行 codex exec --ephemeral）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
+| Step 2 | terminal（运行 kimi -p）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
 | Step 3 | terminal（运行 codex exec -s）、write_file（写 prompt 文件）、read_file | text_to_speech、delegate_task（代替 CLI）、memory、skill_manage（非自迭代）、patch（除非在 four-step-enforcer 插件允许的绕过范围内，仅限 config.yaml/auth.json） |
-| Step 4 | terminal（运行 mimo run / kimi -p / codex exec）、read_file | patch、write_file、text_to_speech、delegate_task（代替 CLI） |
+| Step 4 | terminal（运行 kimi -p）、read_file | patch、write_file、text_to_speech、delegate_task（代替 CLI） |
 
 ### 全局禁止
 - **text_to_speech**：在 4 步法流程的任何步骤中，禁止调用 text_to_speech 工具。该工具与步骤目标无关，调用它会生成无关文件和混淆。
@@ -456,8 +418,9 @@ Step 2: Codex CLI timed out (exit 124, empty output)
 
 | 状态 | 含义 | 条件 |
 |------|------|------|
-| **COMPLETED** | 所有步骤成功完成，验证通过 | 4 个步骤都按用户指定的 CLI 执行并验证通过 |
+| **COMPLETED** | 所有步骤成功完成，验证通过 | 4 个步骤都按用户指定的 CLI 执行并验证通过，且 Post-Completion Self-Audit 已执行，自审查声明块已出现在最终回复末尾，Enhanced Self-Audit 所有适用项为 PASS |
 | **BLOCKED_CLI_FAILURE** | CLI 工具不可用导致流程终止 | 指定的 CLI 完全不可用（如 EFTYPE、命令找不到），且无法修复 |
+| **BLOCKED_SKILL_LOAD_FAILURE** | 技能文件加载失败导致流程终止 | 最新 SKILL.md 无法通过 skill_view 成功加载并验证 name/version |
 | **FAILED_VERIFICATION** | 步骤执行了但验证未通过 | Step 3 修改后验证失败，或 Step 4 复审发现问题 |
 | **ABORTED_SCOPE_VIOLATION** | 超出范围或违规操作 | 修改了非目标代码，或跳过步骤，或使用禁止的工具 |
 | **CANCELLED_BY_USER** | 用户主动取消流程 | 用户明确要求停止，所有步骤停止 |
@@ -471,6 +434,9 @@ Step 2: Codex CLI timed out (exit 124, empty output)
 - 任何步骤使用了未授权的 CLI 工具
 - 未按用户指定的 CLI 执行步骤
 - 自动切换到了历史中使用过的其他 CLI
+- 未执行 Post-Completion Self-Audit（审查清单 9 项 + Enhanced Self-Audit 14 行）
+- 最终回复末尾缺少自审查声明块
+- Enhanced Self-Audit 任一适用项为 FAIL（此时必须为 FAILED_VERIFICATION）
 
 ## Pre/Post State Capture
 
@@ -518,7 +484,7 @@ Step 1: Codex CLI review
 - Verification result: <passed/failed>
 - Fallback reason: <none or specific reason>
 
-Step 2: Codex CLI plan
+Step 2: Kimi CLI plan
 - Attempt: <number of attempts>
 - CLI: <CLI name>
 - Exit code: <code or timeout>
@@ -539,7 +505,7 @@ Step 3: Codex CLI execute
 - Postcondition verified: <yes/no>
 - Workspace changes: <summary>
 
-Step 4: MiMo Code review
+Step 4: Kimi CLI review
 - Attempt: <number of attempts>
 - CLI: <CLI name>
 - Exit code: <code or timeout>
@@ -555,6 +521,7 @@ Failure summary:
 - Unresolved blocker: <none or description>
 
 Self-audit (summary — see full 13-row audit above):
+- Self-audit executed: <yes/no — no 则 terminal status 不能为 COMPLETED>
 - Meaningful output present: <pass/fail>
 - Exit code accepted: <pass/fail>
 - Claims backed by evidence: <pass/fail>
@@ -616,6 +583,28 @@ Self-audit (summary — see full 13-row audit above):
 
 **任何与 CLI 绑定和降级相关的项为 FAIL，不得通过 self-audit。**
 
+### 自审查触发器（v12.7.1 新增）
+
+**四步法汇报模板末尾必须包含自审查结果，不得省略。** 以下为自审查的强制声明格式，必须出现在最终回复的最后一段：
+
+```
+══════════════════════════════════════════════
+自审查：
+- 审查清单违规项：<无 或 列出违规项>
+- Self-Audit 结果：<PASS / FAIL>
+- 违规原因：<如无违规则写"无">
+══════════════════════════════════════════════
+```
+
+缺少此声明的汇报视为未完成自审查：终端状态必须记为 FAILED_VERIFICATION（禁止 COMPLETED），并记入违规清单。
+
+### 技能名冲突预防（v12.9.0 新增）
+
+GitHub 仓库已移至 `~/AppData/Local/hermes/repos/harness-4step/`（不在 skills/ 目录下，不会触发技能名冲突）。当技能名冲突仍然发生时，必须：
+1. 显式声明冲突并手动解决（使用完整路径 `harness-4step/SKILL.md` 加载）
+2. 运行 `skill_view(name='harness-4step/SKILL.md')` 而不是 `skill_view(name='harness-4step')`
+3. 若按路径加载仍失败，**禁止依赖记忆执行**，禁止启动 Step 1，终端状态为 BLOCKED_SKILL_LOAD_FAILURE
+
 ### skill 自迭代例外
 
 skill 文件（SKILL.md）的更新仅在修复本次执行中发现的流程执行违规时适用，例如修复违反工具限制、步骤顺序、CLI 声明或循环规则的规则缺陷。
@@ -646,7 +635,7 @@ This rule applies equally when the target is SKILL.md, another skill file, docum
 循环在以下任一条件满足时必须终止（不等待达到最大循环数）：
 1. **Circuit breaker 打开**：全局熔断触发，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
 2. **累计 3 步骤失败**：任何步骤的输出为空、超时或无效，累计 3 次，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
-3. **所有 CLI 不可用**：Codex 和 MiMo 都认证失败或工具不可用，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
+3. **所有 CLI 不可用**：Codex 和 Kimi 都认证失败或工具不可用，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
 4. **用户取消**：用户明确要求停止，立即终止，终端状态 `CANCELLED_BY_USER`
 
 ### 禁止中途汇报中断循环（v12.2.1 新增）
@@ -666,10 +655,13 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v12.9.0 (2026-07-31): 强化 self-audit 门禁（COMPLETED 必须附自审查声明且全 PASS），harness-4step-repo 移出 skills/ 至 repos/harness-4step 解决技能名冲突，新增 BLOCKED_SKILL_LOAD_FAILURE 终端状态
+- v12.8.0 (2026-07-31): 添加 Kimi CLI Windows `.cmd` 包装器陷阱：Python subprocess 需用 `shell=True` 或 `kimi.cmd`
+- v12.7.0 (2026-07-31): 重大 CLI 绑定变更：Step 2 和 Step 4 统一使用 **Kimi CLI**，彻底移除所有 MiMo Code 相关内容（MiMo CLI 语法要点、Step 3 MiMo 覆盖选项、mimo run 引用）
 - v12.6.0 (2026-07-30): 重大迭代，完全满足用户 CLI 绑定诉求：
   1. **每步 CLI 绑定不可更改**：用户指定后，该步 CLI 永久固定
   2. **超时只重试不降级**：精简提示重试，禁止自动切换到其他工具
-  3. **禁止自动匹配历史**：不得自动切换到之前用过的 CLI（如 MiMo）
+  3. **禁止自动匹配历史**：不得自动切换到之前用过的 CLI
   4. **工具故障不算违规**：CLI 本身不可用（EFTYPE、命令找不到）标记为 BLOCKED_CLI_FAILURE，不视为流程违规
   5. **Step 4 用户指定优先**：用户指定的 Step 4 CLI 必须一直用，直至完全不可用
   6. **重试机制**：用户指定的 CLI 可无限次精简重试
