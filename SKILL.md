@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Harness the 4-step method: Codex CLI Review -> Codex CLI Plan -> Codex CLI Execute -> Kimi CLI Re-review (绑定固定，不自动降级)"
-version: 12.15.0
+version: 12.17.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v12.15.0 — Process Integrity + Multi-Loop Queue)
+# Harness 4-Step Method (v12.17.0 — Enforced Recursive Queue)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -63,7 +63,7 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 |------|-----------------|----------|---------|---------|------|
 | Step 1 | **Codex CLI**（不可更改） | codex exec --ephemeral | 120s | 精简 prompt 重试，仍超时则继续精简重试，不换工具 | 不能改代码，只审查 |
 | Step 2 | **Codex CLI**（不可更改） | codex exec --ephemeral | 120s | 同上 | **不能改代码**，只输出方案不改文件 |
-| Step 3 | **Codex CLI**（不可更改） | codex exec -s danger-full-access | 120s | 写 prompt 文件再 exec / 分段执行，不换工具 | 不能做方案/审查 |
+| Step 3 | **Codex CLI**（不可更改） | codex exec -s danger-full-access | 300s | 写 prompt 文件再 exec / 分段执行，不换工具 | 不能做方案/审查 |
 | Step 4 | **Kimi CLI**（不可更改） | kimi -p | 180s | 精简 prompt 重试，仍超时则继续精简重试，不换工具，不降级 | 不能改代码 |
 
 **绑定规则：**
@@ -657,6 +657,28 @@ Maximum Loops per problem: 10
 - 一个 CLI prompt 能完整描述该验收目标和变更边界
 - 每个 loop 的 Step 1 prompt 应能在 60 秒内完成 CLI 调用
 
+### 可执行 To-Do 队列（v12.16.0，强制）
+
+文字规则不足以保证拆分被执行。每个任务开始前必须在 `~/.hermes/harness-workspace/<task-id>/todo.json` 建立持久化队列；不得只在对话中列待办。
+
+1. **初始化**：`run_cli.py --task-id <id> --todo-init "<任务标题>"`
+2. **入队**：每个项必须包含 `id`、`title`、`acceptance`（单一验收目标）和 `files`（明确文件集合）；依赖写入 `depends_on`。
+3. **取项**：只用 `--todo-next` 领取一个依赖已完成的 `pending` 项。它变为 `running` 后，才可启动该项的 Step 1。
+4. **超时即拆分**：同一项任一只读步骤首次超时后，先压缩上下文重试一次；第二次超时或 prompt 无法控制在单一验收目标内时，必须将该项标记 `split`，用 `--todo-split` 把文件或验收目标拆成更小子项。子项继承父项依赖，禁止把父项直接标为完成。
+5. **完成门**：只有该项完整通过 Step 1→2→3→4 且有对应证据时，才能 `--todo-finish <id> --todo-state completed`。Step 4 的新发现必须新建或拆分 to-do，不能口头忽略。
+6. **循环到清零**：每完成一项立即领取下一项；只有队列中没有 `pending`、`running` 或 `blocked` 项，且总审查通过，任务才可声明完工。
+
+示例：
+```bash
+python scripts/run_cli.py --task-id order-42 --todo-init "修复订单流程"
+python scripts/run_cli.py --task-id order-42 --todo-add-file order-42-api.json
+python scripts/run_cli.py --task-id order-42 --todo-next
+```
+
+`order-42-api.json` 的内容为 `{"id":"order-42-api","title":"校验订单金额","acceptance":"非法金额被拒绝","files":["api/orders.py"]}`。Windows 上优先使用 `--todo-add-file` / `--todo-children-file`，避免 PowerShell 改写 JSON 引号。
+
+`run_cli.py` 会在超时时保留已产生的 stdout/stderr，作为拆分决策的证据；超时不再被误记为“无输出”。
+
 ### 多问题排队修复（Pitfall — 用户强制规则）
 **当同时遇到多个独立问题时，必须拆分为独立 loops 排队修复，每个 loop 聚焦一个问题，全部 loops 完成前不得停止。** 规则如下：
 
@@ -722,6 +744,8 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v12.17.0 (2026-08-01): 修正 Step 3 超时说明为执行器实际默认值 300 秒，消除文档与 `run_cli.py` 的不一致。
+- v12.16.0 (2026-08-01): 将递归拆分从文字约定落实为 `todo.json` 持久化队列和 CLI 子命令；规定领取、拆分、完成与队列清零门；超时保留部分输出；执行器默认绑定统一为 Codex/Codex/Codex/Kimi，并移除 Step 3 的 `--ephemeral`。
 - v12.15.0 (2026-08-01): 用户指定 Step 1/2/3 全部使用 Codex CLI，Step 4 保留 Kimi CLI；更新表格、绑定规则、Tools-in-Scope Allowlist、汇报模板、审查清单第3项、Step 2 超时备用方案章节；清理过时 Kimi CLI 引用。四步法配置最终确认：Step 1→Codex(审查)、Step 2→Codex(方案)、Step 3→Codex(执行)、Step 4→Kimi(复审)。
 - v12.14.0 (2026-08-01): 通用化递归拆分与总审查规则；支持跨文件原子 loop、依赖拓扑排序和多语言验证；新增总审查熔断衔接及 FAILED_VERIFICATION/BLOCKED_CLI_FAILURE 状态映射。
 - v12.13.0 (2026-07-31): 递归拆分机制：大问题→子问题→原子级 to-do 项，每个项一个 loop；拆分粒度标准（prompt 超200字则太粗）；新增总审查（Final Review）：全部 loops 完成后执行全局验收（完整性/一致性/回归/飞书终审/语法验证）；解决 CLI prompt 过长问题。
