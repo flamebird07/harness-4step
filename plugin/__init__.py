@@ -1,4 +1,4 @@
-"""four-step-enforcer — Harness 4-Step enforcement plugin (v3).
+"""harness-4step — Harness 4-Step enforcement plugin (v3).
 
 Enforces real CLI execution via run_cli.py at the tool-call level:
   1. When run_cli.py completes successfully → mark step_done for this session
@@ -213,7 +213,7 @@ def _prune_loop() -> None:
         try:
             _prune_states()
         except Exception:
-            logger.debug("four-step-enforcer: prune loop error (ignored)", exc_info=True)
+            logger.debug("harness-4step: prune loop error (ignored)", exc_info=True)
 
 
 def _get_or_create_state(session_key: str) -> SessionState:
@@ -321,7 +321,7 @@ def _on_pre_tool_call(
             # Build a helpful error message
             blocked_tool = tool_name
             message = (
-                f"🚫 BLOCKED by four-step-enforcer: "
+                f"🚫 BLOCKED by harness-4step: "
                 f"Cannot call '{blocked_tool}' before completing Step 1.\n\n"
                 f"The 4-step harness requires real CLI execution via run_cli.py "
                 f"before modifying any code.\n\n"
@@ -338,7 +338,7 @@ def _on_pre_tool_call(
             )
 
             logger.warning(
-                "four-step-enforcer: BLOCKED %s for session %s "
+                "harness-4step: BLOCKED %s for session %s "
                 "(step1_done=%s, blocks=%d)",
                 tool_name, session_key[:16], state.step1_done,
                 state.blocked_count,
@@ -384,7 +384,7 @@ def _on_post_tool_call(
             and not (error_message and error_message.strip())
         )
         if not is_success:
-            logger.debug("four-step-enforcer: run_cli.py call failed (status=%s), not marking step done", status)
+            logger.debug("harness-4step: run_cli.py call failed (status=%s), not marking step done", status)
             return
         state = _get_or_create_state(session_key)
         cmd = str((args or {}).get("command", "") or "")
@@ -392,7 +392,7 @@ def _on_post_tool_call(
             if f"--step {step_name}" in cmd or f"--step={step_name}" in cmd:
                 state.step1_done = True
                 state.step1_tool_name = f"run_cli.py:{step_name}"
-                logger.info("four-step-enforcer: %s completed via run_cli.py (verified success) for session %s",
+                logger.info("harness-4step: %s completed via run_cli.py (verified success) for session %s",
                     step_name, session_key[:16])
                 break
         return
@@ -417,7 +417,7 @@ def _on_post_tool_call(
         # delegate_task is allowed but does NOT mark step1_done anymore
         # Real CLI execution via run_cli.py is required for step completion
         logger.debug(
-            "four-step-enforcer: delegate_task tracked but does NOT mark step_done "
+            "harness-4step: delegate_task tracked but does NOT mark step_done "
             "for session %s (use run_cli.py instead)",
             session_key[:16],
         )
@@ -437,7 +437,7 @@ def _on_session_start(
         return
     state = _get_or_create_state(session_key)
     logger.debug(
-        "four-step-enforcer: session started: %s (step1_done=%s)",
+        "harness-4step: session started: %s (step1_done=%s)",
         session_key[:16], state.step1_done,
     )
 
@@ -455,7 +455,7 @@ def _on_session_end(
     if session_key in _session_states:
         state = _session_states.pop(session_key)
         logger.debug(
-            "four-step-enforcer: session ended: %s "
+            "harness-4step: session ended: %s "
             "(delegates=%d, blocks=%d)",
             session_key[:16], state.delegate_count, state.blocked_count,
         )
@@ -466,7 +466,7 @@ def _on_session_end(
 # ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
-    """Register the four-step-enforcer plugin hooks."""
+    """Register the harness-4step plugin hooks."""
     global _config, _config_loaded, _prune_thread, _prune_stop_event
 
     # Load config
@@ -486,6 +486,6 @@ def register(ctx) -> None:
 
     enabled = _is_enabled()
     logger.info(
-        "four-step-enforcer: registered (enabled=%s, ttl=%dm, max_sessions=%d)",
+        "harness-4step: registered (enabled=%s, ttl=%dm, max_sessions=%d)",
         enabled, _config.get("ttl_minutes", 30), _get_max_sessions(),
     )

@@ -1,13 +1,13 @@
 # 4步法强制执行系统 (Harness 4-Step Method)
 
-> **v12.9.0** — Self-Audit Gate + Skill Name Conflict Fix + Kimi CLI Binding
+> **v12.15.0** — Step 1/2/3 全部使用 Codex CLI，Step 4 保留 Kimi CLI
 
 ## 系统组成
 
 | 组件 | 作用 |
 |------|------|
-| SKILL.md | 定义4步法规则和流程（v12.9.0） |
-| plugin/ | four-step-enforcer 技术强制执行插件 |
+| SKILL.md | 定义4步法规则和流程（v12.15.0） |
+| plugin/ | harness-4step 技术强制执行插件 |
 | references/ | 参考文档（CLI 语法、故障诊断、会话取证） |
 | scripts/ | 工具脚本 |
 
@@ -15,8 +15,8 @@
 
 | 步骤 | Agent（固定绑定） | Real CLI | 超时 | 限制 |
 |------|-----------------|----------|------|------|
-| Step 1 | **Codex CLI**（不可更改） | `codex exec` | 120s | 不能改代码 |
-| Step 2 | **Kimi CLI**（不可更改） | `kimi -p` | 120s | 只出方案，不能改代码 |
+| Step 1 | **Codex CLI**（不可更改） | `codex exec --ephemeral` | 120s | 只审查，不能改代码 |
+| Step 2 | **Codex CLI**（不可更改） | `codex exec --ephemeral` | 120s | 只出方案，不能改代码 |
 | Step 3 | **Codex CLI**（不可更改） | `codex exec -s danger-full-access` | 120s | 按方案执行修改，不能做方案/审查 |
 | Step 4 | **Kimi CLI**（不可更改） | `kimi -p` | 180s | 复审，不能改代码 |
 
@@ -37,7 +37,7 @@ cp -r harness-4step ~/.hermes/skills/
 
 ```bash
 # 复制插件到正确位置
-cp -r plugin/four-step-enforcer ~/.hermes/plugins/
+cp -r plugin/harness-4step ~/.hermes/plugins/
 ```
 
 ### 3. 使用
@@ -50,15 +50,15 @@ cp -r plugin/four-step-enforcer ~/.hermes/plugins/
 
 ## 版本历史
 
-- v12.9.0 (2026-07-31): 强化 self-audit 门禁，harness-4step-repo 移出 skills/ 解决技能名冲突，新增 BLOCKED_SKILL_LOAD_FAILURE
-- v12.8.0 (2026-07-31): 添加 Kimi CLI Windows `.cmd` 包装器陷阱
-- v12.7.0 (2026-07-31): 重大 CLI 绑定变更：Step 2 和 Step 4 统一使用 Kimi CLI，彻底移除 MiMo Code
-- v12.6.0 (2026-07-30): 每步 CLI 绑定不可更改，超时只重试不降级，禁止自动匹配历史
-- v12.5.0 (2026-07-30): MiMo CLI 语法要点、Windows PATH 坑、超时缓解技巧
-- v12.4.0 (2026-07-30): 添加 Kimi CLI 作为 Step 4 选项
-- v12.3.0 (2026-07-29): Result Verification Gate, Failure Classification Matrix, Circuit Breaker, Terminal Statuses
-- v12.2.0 (2026-07-28): Step 3 CLI 声明要求，自审查清单
-- v12.1.0 (2026-07-28): Windows 原生 Codex CLI EFTYPE 错误章节
+- v12.15.0 (2026-08-01): Step 1/2/3 全部使用 Codex CLI，Step 4 保留 Kimi CLI；插件重命名为 harness-4step
+- v12.14.0 (2026-08-01): 通用化递归拆分与总审查规则；跨文件原子 loop、拓扑排序
+- v12.13.0 (2026-07-31): 递归拆分机制：大问题→子问题→原子级 to-do 项
+- v12.12.0 (2026-07-31): Step 1 → Kimi CLI（审查），Step 2 → Codex CLI（方案）
+- v12.10.0 (2026-07-31): 多问题拆分为独立 loops 排队修复
+- v12.9.0 (2026-07-30): 强化 self-audit 门禁，harness-4step-repo 移出 skills/
+- v12.8.0 (2026-07-30): 添加 Kimi CLI Windows `.cmd` 包装器陷阱
+- v12.7.0 (2026-07-30): Step 2 和 Step 4 统一使用 Kimi CLI，移除 MiMo Code
+- v12.6.0 (2026-07-30): 每步 CLI 绑定不可更改，超时只重试不降级
 
 ## 许可证
 

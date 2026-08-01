@@ -1,7 +1,7 @@
 ---
 name: harness-4step
-description: "Harness the 4-step method: Codex CLI Review -> Kimi CLI Plan -> Codex CLI Execute -> Kimi CLI Re-review (绑定固定，不自动降级)"
-version: 12.9.0
+description: "Harness the 4-step method: Codex CLI Review -> Codex CLI Plan -> Codex CLI Execute -> Kimi CLI Re-review (绑定固定，不自动降级)"
+version: 12.15.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v12.9.0 — Self-Audit Gate + Skill Name Conflict Fix)
+# Harness 4-Step Method (v12.15.0 — Process Integrity + Multi-Loop Queue)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -61,13 +61,13 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 
 | Step | Agent（固定绑定） | Real CLI | Timeout | 超时策略 | 限制 |
 |------|-----------------|----------|---------|---------|------|
-| Step 1 | **Codex CLI**（不可更改） | codex exec | 120s | 精简 prompt 重试，仍超时则继续精简重试，不换工具 | 不能改代码 |
-| Step 2 | **Kimi CLI**（不可更改） | kimi -p | 120s | 同上 | **不能改代码**，只输出方案不改文件 |
+| Step 1 | **Codex CLI**（不可更改） | codex exec --ephemeral | 120s | 精简 prompt 重试，仍超时则继续精简重试，不换工具 | 不能改代码，只审查 |
+| Step 2 | **Codex CLI**（不可更改） | codex exec --ephemeral | 120s | 同上 | **不能改代码**，只输出方案不改文件 |
 | Step 3 | **Codex CLI**（不可更改） | codex exec -s danger-full-access | 120s | 写 prompt 文件再 exec / 分段执行，不换工具 | 不能做方案/审查 |
 | Step 4 | **Kimi CLI**（不可更改） | kimi -p | 180s | 精简 prompt 重试，仍超时则继续精简重试，不换工具，不降级 | 不能改代码 |
 
 **绑定规则：**
-- Step 2 和 Step 4 的 CLI 是 **Kimi CLI**，一旦指定，**不得自动匹配历史使用记录**
+- Step 1、Step 2、Step 3 的 CLI 是 **Codex CLI**，Step 4 的 CLI 是 **Kimi CLI**，一旦指定，**不得自动匹配历史使用记录**
 - 不得在超时后擅自降级到其他 CLI
 - 如需更改 CLI，必须用户明确重新指定
 
@@ -175,6 +175,15 @@ CLI execution: SSH to 10.0.0.50 (PowerShell转义降级 → 本地batch文件方
 
 ## CLI Timeout Handling
 
+### Windows npm CLI PATH 问题
+在 Windows MSYS bash 环境中，codex 和 kimi 都是 `.cmd` 批处理包装器，位于 `%AppData%/npm/`。新 shell 会话可能不包含该目录在 PATH 中。每次调用前必须显式导出：
+
+```bash
+export PATH="$PATH:/c/Users/<username>/AppData/Roaming/npm"
+```
+
+如果 `codex --version` 或 `kimi --version` 返回 `command not found`，说明 PATH 未配置。以上命令修正后即可使用。
+
 ### 通用规则
 1. 第一次超时 -> 精简 prompt 重试一次
 2. 第二次超时 -> 继续精简 prompt 重试，**不降级到其他工具**
@@ -234,14 +243,16 @@ print(r.stdout)
   r = subprocess.run(['kimi.cmd', '-p', prompt], capture_output=True, text=True,
                      timeout=180, encoding='utf-8', errors='replace', shell=True)
   ```
+### Step 2: Codex CLI 超时 — 备用方案
 
-### Step 3: Codex CLI 超时
-降级路径：
-  方案1: 写 prompt 文件再 exec
-  方案2: 分段 codex exec
+当 Step 2 的 Codex CLI --ephemeral 在代码分析类 prompt 下连续超时（exit 124），且 Step 1 审查已给出具体修复建议时，可以直接基于 Step 1 审查输出中的修复建议作为方案，进入 Step 3 执行。规则：
 
-- 降级后仍需要验证结果
-- 降级不是跳过步骤，而是换工具完成同一件事
+1. **仅限连续超时**：必须至少重试 2 次精简 prompt 后仍超时，才启用此备用方案
+2. **Step 1 审查必须包含具体修复建议**：方案必须来自 Step 1 Codex 审查输出的精确代码片段或修改建议，不得自行编造
+3. **声明要求**：在 Step 3 声明中注明"Step 2 方案基于 Step 1 Codex 审查输出（Codex CLI 连续超时）"
+4. **Step 4 仍需 Kimi CLI**：复审步骤仍必须用 Kimi CLI，不得以此为由跳过 Step 4
+
+This is a timeout workaround, not a tool downgrade — the plan source falls back to Step 1 output, but Step 4 still requires Kimi CLI.
 
 ### Step 4: Kimi CLI 超时
 
@@ -287,7 +298,7 @@ Step 3 的修改**默认通过 Codex CLI -s danger-full-access 执行**。禁止
 cat prompt.md | codex exec -m gpt-5.6-luna --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
 ```
 
-例外：配置文件（config.yaml、auth.json）的修改可以通过 four-step-enforcer 插件的 bypass 机制用 terminal 处理，但必须在声明中注明。
+例外：配置文件（config.yaml、auth.json）的修改可以通过 harness-4step 插件的 bypass 机制用 terminal 处理，但必须在声明中注明。
 
 ### 自我审查修正例外声明
 应用任何自我审查 patch 之前，必须声明：
@@ -313,7 +324,7 @@ Self-audit correction exception: <发现的问题>; files in scope: <文件范�
 - CLI 失败后继续推进步骤
 - 在 goal 字段标注角色但不调用对应 CLI
 
-### four-step-enforcer 插件
+### harness-4step 插件
 插件会拦截 write_file/patch/skill_manage 操作。允许的绕过方式：
 - terminal -> 用 Python 脚本或 shell 命令修改配置文件
 - 限制：仅用于配置文件（config.yaml、auth.json），不用于代码文件
@@ -402,9 +413,9 @@ Step 2: Codex CLI timed out (exit 124, empty output)
 
 | 步骤 | 允许的工具 | 禁止的工具 |
 |------|-----------|-----------|
-| Step 1 | terminal（运行 codex exec）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
-| Step 2 | terminal（运行 kimi -p）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
-| Step 3 | terminal（运行 codex exec -s）、write_file（写 prompt 文件）、read_file | text_to_speech、delegate_task（代替 CLI）、memory、skill_manage（非自迭代）、patch（除非在 four-step-enforcer 插件允许的绕过范围内，仅限 config.yaml/auth.json） |
+| Step 1 | terminal（运行 codex exec --ephemeral）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
+| Step 2 | terminal（运行 codex exec --ephemeral）、write_file（写 prompt 文件）、read_file（读代码） | patch、write_file（改代码）、memory、skill_manage、text_to_speech、delegate_task（代替 CLI） |
+| Step 3 | terminal（运行 codex exec -s）、write_file（写 prompt 文件）、read_file | text_to_speech、delegate_task（代替 CLI）、memory、skill_manage（非自迭代）、patch（除非在 harness-4step 插件允许的绕过范围内，仅限 config.yaml/auth.json） |
 | Step 4 | terminal（运行 kimi -p）、read_file | patch、write_file、text_to_speech、delegate_task（代替 CLI） |
 
 ### 全局禁止
@@ -422,6 +433,8 @@ Step 2: Codex CLI timed out (exit 124, empty output)
 | **BLOCKED_CLI_FAILURE** | CLI 工具不可用导致流程终止 | 指定的 CLI 完全不可用（如 EFTYPE、命令找不到），且无法修复 |
 | **BLOCKED_SKILL_LOAD_FAILURE** | 技能文件加载失败导致流程终止 | 最新 SKILL.md 无法通过 skill_view 成功加载并验证 name/version |
 | **FAILED_VERIFICATION** | 步骤执行了但验证未通过 | Step 3 修改后验证失败，或 Step 4 复审发现问题 |
+| **FAILED_VERIFICATION** | 总审查发现遗漏、冲突或回归失败 | 总审查发现问题；如有可执行 loop，进入修复 loop |
+| **BLOCKED_CLI_FAILURE** | 总审查 CLI 不可用 | 总审查期间 CLI 不可用或触发熔断 |
 | **ABORTED_SCOPE_VIOLATION** | 超出范围或违规操作 | 修改了非目标代码，或跳过步骤，或使用禁止的工具 |
 | **CANCELLED_BY_USER** | 用户主动取消流程 | 用户明确要求停止，所有步骤停止 |
 | **BLOCKED_TIMEOUT_RETRY** | 多次超时但仍可重试 | 用户指定的 CLI 超时，但工具本身可用，等待后续重试 |
@@ -484,7 +497,7 @@ Step 1: Codex CLI review
 - Verification result: <passed/failed>
 - Fallback reason: <none or specific reason>
 
-Step 2: Kimi CLI plan
+Step 2: Codex CLI plan
 - Attempt: <number of attempts>
 - CLI: <CLI name>
 - Exit code: <code or timeout>
@@ -541,13 +554,14 @@ Self-audit (summary — see full 13-row audit above):
 
 1. **Step 4 发现问题后是否直接 patch 绕过循环？** → 必须回到 Step 2→3→4，不能直接用 patch/write_file 修复
 2. **Step 3 是否使用了正确的 CLI？** → Codex CLI -s danger-full-access
-3. **Step 1/2 是否用了 Codex CLI？** → 不能用 read_file 自己审查代替
+3. **Step 1/2 是否用了正确的 CLI？** → Step 1 和 Step 2 用 Codex CLI --ephemeral，不能用 read_file 自己审查代替
 4. **所有步骤是否都调用了真实 CLI？** → 不能用 Hermes 工具（patch/write_file/terminal）代替
 5. **Codex 超时/转义失败后是否走了降级路径？** → 精简提示重试 / 写 prompt 文件再 exec
 6. **Step 4 复审后是否有未处理的警告？** → Step 4 指出的问题必须进入循环
 7. **是否跳过了 Step 2 或 Step 4？** → 必须完整执行 4 个步骤
 8. **是否在 Step 3 前声明了 CLI？** → 必须先声明 "Step 3 implementation CLI: <工具和模式>"
 9. **Step 4 发现的问题是否绕过了循环直接修复？** → 必须回到 Step 2→3→4，不能直接 patch
+10. **是否声称某项完成但实际上未执行对应工作？** → 每个 loop/item 必须实际执行其修复/修改，再标记完成。不得仅仅"标记完成"而不做实际代码修改或验证。用户会检查实际完成状态。Pitfall：当工作区已有未提交修改时，不要假设修复已充分——必须验证实际修改内容是否满足需求，并确认没有遗漏的并行工作项。
 
 ### 触发自我迭代
 
@@ -577,9 +591,11 @@ Self-audit (summary — see full 13-row audit above):
 | Step 3 pre-state baseline was captured | PASS / FAIL / NOT APPLICABLE |
 | Step 3 postcondition was verified | PASS / FAIL / NOT APPLICABLE |
 | No unrelated or unapproved tools were invoked | PASS / FAIL |
+| 每个 loop/item 标记完成前已实际执行并验证（用户会检查实际完成状态，不得仅标记完成） | PASS / FAIL |
 | Retry limits were respected（用户指定工具无限重试） | PASS / FAIL |
 | 因 CLI 工具本身故障导致的阻塞已正确标记为 BLOCKED_CLI_FAILURE | PASS / FAIL |
 | Step 4 findings were resolved through the loop mechanism (not direct patch) | PASS / FAIL |
+| 总审查（Final Review）已执行且全部 PASS | PASS / FAIL / N/A（无 loops 时） |
 
 **任何与 CLI 绑定和降级相关的项为 FAIL，不得通过 self-audit。**
 
@@ -615,6 +631,7 @@ skill 文件（SKILL.md）的更新仅在修复本次执行中发现的流程执
 
 ## Loops Mechanism
 
+### 单问题循环（Step 4 FAIL 后回退）
 When Step 4 fails or reports any actionable finding, warning, defect, or correction request, the process loops back to Step 2:
 
 Step 1 -> Step 2 -> Step 3 -> Step 4
@@ -622,7 +639,35 @@ Step 1 -> Step 2 -> Step 3 -> Step 4
                 |    FAIL       |
                 +---------------+
 
-Maximum Loops: 10
+Maximum Loops per problem: 10
+
+### 递归拆分规则（v12.14.0 核心机制）
+
+**原则：每个 to-do 项必须是原子级单问题，一个 loop 只解决一个问题。**
+
+1. **一级拆分**：用户提出的大需求 → 拆成 N 个独立 Loop（如之前的 B1-B8）
+2. **二级拆分**：如果某个 Loop 内部发现多个独立子问题 → 继续拆成 sub-loop（如 Loop 2 内发现 2a/2b/2c）
+3. **三级及更深**：同理，直到每个 to-do 项满足"**单一验收目标 + 单一变更边界 + 明确文件集合 + 可独立验证**"
+4. **禁止合并**：已拆分的子问题不得合并回一个大 loop 执行
+5. **动态拆分**：Step 1 审查过程中发现的新问题 → 立即拆为新的 to-do 项，加入队列尾部，当前 loop 只处理原定目标
+
+**拆分粒度标准**：
+- 一个 loop = 单一验收目标对应的一个变更集合
+- 跨文件修改可以属于同一个原子 loop，前提是所有文件共同服务于同一个验收目标
+- 一个 CLI prompt 能完整描述该验收目标和变更边界
+- 每个 loop 的 Step 1 prompt 应能在 60 秒内完成 CLI 调用
+
+### 多问题排队修复（Pitfall — 用户强制规则）
+**当同时遇到多个独立问题时，必须拆分为独立 loops 排队修复，每个 loop 聚焦一个问题，全部 loops 完成前不得停止。** 规则如下：
+
+1. **拆分**：每个问题分配一个独立的 loop（如 Loop 1: 版本号修复、Loop 2: 主模型失效处理、Loop 3: 飞书备注策略）
+2. **排队**：先建立依赖关系，按拓扑顺序执行；无依赖项再按风险排序
+3. **聚焦**：每个 loop 只解决一个问题，不跨 loop 修改非目标代码
+4. **完整性**：每个 loop 必须完成完整的 Step 1→2→3→4（含审核），不得跳过
+5. **不中断**：全部 loops 完成前，不得向用户汇报"部分完成"或询问"是否继续"
+6. **最终汇报**：所有 loops 完成后，一次性汇总汇报
+
+**用户偏好**：当用户说"继续"或"不要打扰我"时，自动继续执行下一个 loop，不询问确认。用户明确指示"不要打扰我"时，只有在所有 CLI 工具完全不可用时才中断。不得因"需要确认优先级"或"需要用户选择"而主动停下来。保持静默执行直到所有 loops 完成。
 
 This rule applies equally when the target is SKILL.md, another skill file, documentation, configuration, or source code.
 
@@ -630,6 +675,28 @@ This rule applies equally when the target is SKILL.md, another skill file, docum
 - 禁止用 patch/write_file 直接修复 → 必须走完 Step 2→3→4
 - 禁止跳过任一 CLI 步骤
 - 禁止修改非本次循环目标的其他代码
+
+6. **最终汇报**：所有 loops 完成后，一次性汇总汇报
+
+### 总审查（Final Review，v12.14.0 新增）
+
+**如果已触发全局熔断或步骤级熔断，不启动总审查，报告中记录 `Final Review: NOT_RUN — BLOCKED_CLI_FAILURE`。**
+
+**正常完成全部 loops 后，必须执行一次总审查。总审查期间发生 CLI 熔断，立即停止剩余项目。**
+
+总审查不是 Step 4（Step 4 是每个 loop 内部的复审），而是所有 loops 结束后的全局验收：
+
+1. **完整性检查**：原始需求中的每个子问题是否都有对应的 loop 完成记录
+2. **一致性检查**：修改后的文件之间是否存在冲突（如 A loop 改了 sync 的某行，B loop 又改了同一行）
+3. **回归/健康检查**：执行项目适用的回归/健康检查（例如凭证池全量同步/健康检查仅作为示例）
+4. **外部状态核对**：核对项目声明的外部系统或持久化状态（例如飞书记录仅作为示例）
+5. **语法/编译/类型/静态检查**：按项目语言和工具链执行适用的语法/编译/类型验证或静态检查（例如 Python 的 `python -m py_compile`、TypeScript/JavaScript 的对应工具仅作为示例）
+6. **无适用检查**：标记 `NOT_APPLICABLE`，并说明理由
+7. **输出总报告**：包含每个 loop 的终端状态、修改文件清单、各项总审查结果
+
+**总审查失败的处理**：
+- 如果发现遗漏、冲突或回归失败 → 终端状态为 `FAILED_VERIFICATION`；如存在可执行 loop，则拆为新的 to-do 项并继续修复
+- 直到总审查全部 PASS
 
 ### 循环终止条件（v12.3.0 新增）
 循环在以下任一条件满足时必须终止（不等待达到最大循环数）：
@@ -655,6 +722,11 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v12.15.0 (2026-08-01): 用户指定 Step 1/2/3 全部使用 Codex CLI，Step 4 保留 Kimi CLI；更新表格、绑定规则、Tools-in-Scope Allowlist、汇报模板、审查清单第3项、Step 2 超时备用方案章节；清理过时 Kimi CLI 引用。四步法配置最终确认：Step 1→Codex(审查)、Step 2→Codex(方案)、Step 3→Codex(执行)、Step 4→Kimi(复审)。
+- v12.14.0 (2026-08-01): 通用化递归拆分与总审查规则；支持跨文件原子 loop、依赖拓扑排序和多语言验证；新增总审查熔断衔接及 FAILED_VERIFICATION/BLOCKED_CLI_FAILURE 状态映射。
+- v12.13.0 (2026-07-31): 递归拆分机制：大问题→子问题→原子级 to-do 项，每个项一个 loop；拆分粒度标准（prompt 超200字则太粗）；新增总审查（Final Review）：全部 loops 完成后执行全局验收（完整性/一致性/回归/飞书终审/语法验证）；解决 CLI prompt 过长问题。
+- v12.12.0 (2026-07-31): 用户指定 CLI 绑定调整：Step 1 → Kimi CLI（审查），Step 2 → Codex CLI（方案），Step 3/4 不变。更新表格、Tools-in-Scope Allowlist、汇报模板、审查清单第3项、description。
+- v12.10.0 (2026-07-31): 新增"多问题拆分为独立 loops 排队修复"规则；新增"用户要求继续时不询问"规则；新增 Windows npm CLI PATH 问题章节；新增 Step 2 Kimi CLI 超时时的备用方案（基于 Step 1 Codex 审查输出）
 - v12.9.0 (2026-07-31): 强化 self-audit 门禁（COMPLETED 必须附自审查声明且全 PASS），harness-4step-repo 移出 skills/ 至 repos/harness-4step 解决技能名冲突，新增 BLOCKED_SKILL_LOAD_FAILURE 终端状态
 - v12.8.0 (2026-07-31): 添加 Kimi CLI Windows `.cmd` 包装器陷阱：Python subprocess 需用 `shell=True` 或 `kimi.cmd`
 - v12.7.0 (2026-07-31): 重大 CLI 绑定变更：Step 2 和 Step 4 统一使用 **Kimi CLI**，彻底移除所有 MiMo Code 相关内容（MiMo CLI 语法要点、Step 3 MiMo 覆盖选项、mimo run 引用）
