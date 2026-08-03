@@ -4,15 +4,14 @@ Unified CLI executor for the 4-step harness method.
 
 Default: Codex/Codex/Codex/Kimi (4-step harness contract).
 Users can override per-step via ~/.hermes/harness-config.yaml.
-To use MiMo Code (free) for ALL steps, create the config file with:
-  step1: {agent: mimo}
-  step2: {agent: mimo}
-  step4: {agent: mimo}
+For example, to use Claude for Step 1, create the config file with:
+  step1: {agent: claude}
 
 No private paths are hardcoded — executables are resolved via shutil.which().
 """
 from __future__ import annotations
 import argparse, hashlib, json, os, shutil, subprocess, sys, time
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +20,7 @@ from todo_queue import add as todo_add, finish as todo_finish, initialize as tod
 from todo_queue import next_item as todo_next, split as todo_split, summary as todo_summary
 
 # ---------------------------------------------------------------------------
-# Default configuration — Codex/Codex/MiMo/Kimi (4-step harness contract)
+# Default configuration — step bindings (agent + timeout per step)
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG = {
@@ -32,12 +31,12 @@ DEFAULT_CONFIG = {
     },
     "step2": {
         "agent": "codex",
-        "description": "Plan: design fix approach (read-only, --ephemeral)",
+        "description": "Plan: design fix approach (read-only)",
         "timeout_seconds": 120,
     },
     "step3": {
         "agent": "codex",
-        "description": "Execute: implement code changes (-s danger-full-access)",
+        "description": "Execute: implement code changes",
         "timeout_seconds": 300,
     },
     "step4": {
@@ -56,34 +55,114 @@ AGENT_CLI = {
         "executable": "codex",
         "args_base": ["exec", "--ephemeral", "--skip-git-repo-check",
                       "--sandbox", "danger-full-access", "--json"],
+        "output_parse": "json_lines",
+        "step3_remove_args": ["--ephemeral"],
     },
     "mimo": {
         "executable": "mimo",
         "args_base": ["run", "--print-logs"],
+        "output_parse": "plain",
+        "step3_remove_args": [],
     },
     "kimi": {
         "executable": "kimi",
         "args_base": ["-p"],
+        "output_parse": "plain",
+        "step3_remove_args": [],
+    },
+    "claude": {
+        "executable": "claude",
+        "args_base": ["-p"],
+        "output_parse": "plain",
+        "step3_remove_args": [],
     },
 }
 
 
-def _load_user_config() -> dict[str, Any]:
-    """Load user overrides from ~/.hermes/harness-config.yaml (if exists)."""
-    config_path = Path.home() / ".hermes" / "harness-config.yaml"
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge configuration without changing its inputs."""
+    result = deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = deepcopy(value)
+    return result
+
+
+@dataclass(frozen=True)
+class HarnessConfig:
+    """Configuration model for the harness's steps, agents, and defaults."""
+    defaults: dict[str, Any]
+    agents: dict[str, dict[str, Any]]
+    steps: dict[str, dict[str, Any]]
+    source: Path
+
+    def step(self, name: str) -> dict[str, Any]:
+        if name not in self.steps:
+            raise ValueError(f"Unknown step: {name}. Configured steps: {', '.join(self.steps)}.")
+        return _deep_merge(self.defaults, self.steps[name])
+
+    def agent(self, name: str) -> dict[str, Any]:
+        try:
+            return self.agents[name]
+        except KeyError as error:
+            raise ValueError(f"Unknown agent '{name}' in {self.source}.") from error
+
+    def resolve_executable(self, agent: str) -> str | None:
+        exe = self.agent(agent)["executable"]
+        if found := shutil.which(exe):
+            return found
+        if sys.platform == "win32":
+            for ext in (".cmd", ".exe", ".bat"):
+                if found := shutil.which(exe + ext):
+                    return found
+        return None
+
+
+def _config_path() -> Path:
+    """Environment override supports project-local configs and automated tests."""
+    return Path(os.environ.get("HERMES_HARNESS_CONFIG", Path.home() / ".hermes" / "harness-config.yaml"))
+
+
+def load_config(path: Path | None = None) -> HarnessConfig:
+    """Load the configuration model and retain legacy root-level step overrides."""
+    source = path or _config_path()
+    override = _load_user_config(source)
+    legacy_steps = {name: value for name, value in override.items() if name in DEFAULT_CONFIG}
+    legacy_defaults = override.pop("all", {})
+    for name in legacy_steps:
+        override.pop(name)
+    agents = _deep_merge(AGENT_CLI, override.get("agents", {}))
+    steps = _deep_merge(DEFAULT_CONFIG, override.get("steps", {}))
+    steps = _deep_merge(steps, legacy_steps)
+    defaults = _deep_merge({"timeout_seconds": 180}, override.get("defaults", {}))
+    defaults = _deep_merge(defaults, legacy_defaults)
+    config = HarnessConfig(defaults=defaults, agents=agents, steps=steps, source=source)
+    for name, agent in config.agents.items():
+        if not isinstance(agent, dict) or not isinstance(agent.get("executable"), str) or not isinstance(agent.get("args_base", []), list):
+            raise ValueError(f"Agent '{name}' must define string executable and list args_base.")
+    for name, step in config.steps.items():
+        if not isinstance(step, dict) or step.get("agent") not in config.agents:
+            raise ValueError(f"Step '{name}' must reference a configured agent.")
+    return config
+
+
+def _load_user_config(config_path: Path | None = None) -> dict[str, Any]:
+    """Read YAML, with JSON as the dependency-free fallback."""
+    config_path = config_path or _config_path()
     if not config_path.is_file():
         return {}
     try:
         import yaml
-        with open(config_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     except ImportError:
-        try:
-            return json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    except Exception:
+        loaded = json.loads(config_path.read_text(encoding="utf-8"))
+    if loaded is None:
         return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Configuration root must be a mapping: {config_path}")
+    return loaded
 
 
 def _resolve_executable(agent: str) -> str | None:
@@ -106,14 +185,8 @@ def _resolve_executable(agent: str) -> str | None:
 
 
 def get_step_config(step: str) -> dict[str, Any]:
-    """Get merged config for a step: defaults + user overrides."""
-    user_config = _load_user_config()
-    step_cfg = dict(DEFAULT_CONFIG.get(step, {}))
-    if step in user_config:
-        step_cfg.update(user_config[step])
-    if "all" in user_config:
-        step_cfg.update(user_config["all"])
-    return step_cfg
+    """Compatibility wrapper for callers importing the old helper."""
+    return load_config().step(step)
 
 
 @dataclass
@@ -126,22 +199,20 @@ class CliRunResult:
 
 def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             timeout_seconds: int | None = None) -> CliRunResult:
-    if step not in DEFAULT_CONFIG:
-        raise ValueError(f"Unknown step: {step}. Must be step1-step4.")
-    cfg = get_step_config(step)
+    config = load_config()
+    cfg = config.step(step)
     agent = cfg["agent"]
-    exe = _resolve_executable(agent)
+    exe = config.resolve_executable(agent)
     if not exe:
         return CliRunResult(step=step, agent=agent, command=[agent], started_at="",
             finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
             stderr_path="", evidence_path="", output_sha256="", success=False,
             failure_reason=f"CLI '{agent}' not found. Install or override in ~/.hermes/harness-config.yaml")
-    cli_info = AGENT_CLI[agent]
+    cli_info = config.agent(agent)
     args_base = list(cli_info["args_base"])
-    if step == "step3" and agent == "codex":
-        # An implementation step must retain its workspace state; --ephemeral
-        # is correct for review/planning but wrong for an executor.
-        args_base = [x for x in args_base if x != "--ephemeral"]
+    if step == "step3":
+        for arg in cli_info.get("step3_remove_args", []):
+            args_base = [x for x in args_base if x != arg]
     cmd = [exe] + args_base + [prompt]
     d = Path.home() / ".hermes" / "harness-workspace" / task_id / step
     d.mkdir(parents=True, exist_ok=True)
@@ -150,9 +221,12 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
     t = timeout_seconds or cfg.get("timeout_seconds", 180)
     s0 = time.monotonic(); sa = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     try:
+        # On Windows, npm-installed CLIs are commonly .cmd/.bat wrappers.
+        # They must be launched through cmd.exe rather than CreateProcess.
+        use_shell = sys.platform == "win32" and Path(exe).suffix.lower() in {".cmd", ".bat"}
         r = subprocess.run(cmd, cwd=str(workspace), stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=t, shell=False)
+            timeout=t, shell=use_shell)
         ec, so, se = r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired as e:
         # Keep partial output: it is evidence for diagnosing whether a timeout is
@@ -169,7 +243,8 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
     stdout_p.write_text(so, encoding="utf-8"); stderr_p.write_text(se, encoding="utf-8")
     h = hashlib.sha256(so.encode()).hexdigest()
     am = None
-    if agent == "codex":
+    output_parse = cli_info.get("output_parse", "plain")
+    if output_parse == "json_lines":
         for ln in so.split("\n"):
             if not ln.strip(): continue
             try:
@@ -177,7 +252,7 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
                 if d2.get("type")=="item.completed" and d2.get("item",{}).get("type")=="agent_message":
                     am = d2["item"].get("text","")
             except: pass
-    elif agent in ("mimo", "kimi"):
+    else:
         am = so.strip()
     ok = ec == 0 and bool(so.strip())
     fr = (f"Timeout after {t}s" if ec == -2 else f"Exit code: {ec}") if ec != 0 else ("Empty stdout" if not so.strip() else None)
@@ -201,26 +276,38 @@ def verify_evidence(ev_p: Path) -> tuple[bool, str]:
     for f in ["schema_version","task_id","step","agent","exit_code","success"]:
         if f not in ev: return False, f"Missing: {f}"
     if not ev.get("success"): return False, f"Failed: {ev.get('failure_reason')}"
+    stdout_path = ev.get("stdout_path")
+    expected_hash = ev.get("output_sha256")
+    if not isinstance(stdout_path, str) or not stdout_path:
+        return False, "Missing: stdout_path"
+    if not isinstance(expected_hash, str) or not expected_hash:
+        return False, "Missing: output_sha256"
+    try:
+        output = Path(stdout_path).read_bytes()
+    except OSError as error:
+        return False, f"Cannot read stdout: {error}"
+    if hashlib.sha256(output).hexdigest() != expected_hash:
+        return False, "stdout SHA-256 does not match evidence"
     return True, "OK"
 
 
 def print_config():
+    config = load_config()
     print("=== harness-4step CLI Configuration ===")
-    print("Current: Codex/Codex/Codex/Kimi (harness-4step v12.16.0)")
-    print("Config file: ~/.hermes/harness-config.yaml")
+    print(f"Config file: {config.source}")
     print()
-    for step in ["step1","step2","step3","step4"]:
-        cfg = get_step_config(step)
-        exe = _resolve_executable(cfg["agent"])
+    for step in config.steps:
+        cfg = config.step(step)
+        exe = config.resolve_executable(cfg["agent"])
         status = "OK" if exe else "NOT FOUND"
-        print(f"  {step}: agent={cfg['agent']}, exe={exe or 'N/A'} ({status})")
+        print(f"  {step}: agent={cfg['agent']}, timeout={cfg.get('timeout_seconds')}s, exe={exe or 'N/A'} ({status})")
     print()
-    print("Change a binding only with an explicit user-approved harness-config.yaml override.")
+    print("Use 'agents', 'steps', and 'defaults' in harness-config.yaml; legacy root step overrides also work.")
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="4-step harness CLI executor")
-    p.add_argument("--step", choices=["step1","step2","step3","step4"])
+    p.add_argument("--step", help="Configured step name")
     p.add_argument("--task-id"); p.add_argument("--workspace")
     p.add_argument("--prompt"); p.add_argument("--prompt-file")
     p.add_argument("--timeout", type=int)
