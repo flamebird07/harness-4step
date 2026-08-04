@@ -10,6 +10,7 @@ from typing import Any
 
 VALID_STATES = {"pending", "running", "completed", "blocked", "split"}
 ATOMIC_FIELDS = {"id", "title", "acceptance", "files"}
+STEPS = ("step1", "step2", "step3", "step4")
 
 
 def queue_path(task_id: str) -> Path:
@@ -63,6 +64,8 @@ def add(task_id: str, item: dict[str, Any]) -> dict[str, Any]:
     item.setdefault("state", "pending")
     item.setdefault("loops", 0)
     item.setdefault("history", [])
+    item.setdefault("next_step", "step1")
+    item.setdefault("step_attempts", {})
     if item["state"] not in VALID_STATES:
         raise ValueError("Invalid to-do state")
     data["items"].append(item); _write(path, data)
@@ -98,10 +101,45 @@ def next_item(task_id: str) -> dict[str, Any] | None:
     for item in data["items"]:
         if item.get("state") == "pending" and set(item.get("depends_on", [])) <= completed:
             item["state"] = "running"
+            item.setdefault("next_step", "step1")
             item.setdefault("history", []).append({"event": "claimed"})
             _write(path, data)
             return item
     return None
+
+
+def begin_step(task_id: str, item_id: str, step: str) -> dict[str, Any]:
+    if step not in STEPS:
+        raise ValueError("Invalid harness step")
+    path = queue_path(task_id); data = _read(path)
+    item = next((x for x in data["items"] if x["id"] == item_id), None)
+    if not item or item.get("state") != "running":
+        raise ValueError("Step requires a claimed running to-do item")
+    if item.get("next_step") != step:
+        raise ValueError(f"Out-of-order step: expected {item.get('next_step')}, got {step}")
+    item.setdefault("history", []).append({"event": "step_started", "step": step})
+    _write(path, data)
+    return item
+
+
+def record_step(task_id: str, item_id: str, step: str, success: bool, evidence_path: str = "") -> dict[str, Any]:
+    path = queue_path(task_id); data = _read(path)
+    item = next((x for x in data["items"] if x["id"] == item_id), None)
+    if not item:
+        raise ValueError(f"Unknown to-do id: {item_id}")
+    attempts = item.setdefault("step_attempts", {})
+    attempts[step] = int(attempts.get(step, 0)) + 1
+    event = {"event": "step_completed" if success else "step_failed", "step": step,
+             "attempt": attempts[step], "evidence": evidence_path}
+    item.setdefault("history", []).append(event)
+    if success:
+        next_index = STEPS.index(step) + 1
+        item["next_step"] = STEPS[next_index] if next_index < len(STEPS) else "finish"
+    elif step in {"step1", "step2", "step4"} and attempts[step] >= 2:
+        item["split_required"] = True
+        item["history"].append({"event": "split_required", "reason": "two failed read-only attempts", "step": step})
+    _write(path, data)
+    return item
 
 
 def finish(task_id: str, item_id: str, state: str, note: str = "") -> dict[str, Any]:
@@ -111,6 +149,8 @@ def finish(task_id: str, item_id: str, state: str, note: str = "") -> dict[str, 
     item = next((x for x in data["items"] if x["id"] == item_id), None)
     if not item:
         raise ValueError(f"Unknown to-do id: {item_id}")
+    if state == "completed" and item.get("next_step") != "finish":
+        raise ValueError("Cannot complete item until Step 1 through Step 4 all succeed")
     item["state"] = state; item.setdefault("history", []).append({"event": state, "note": note})
     _write(path, data); return item
 
