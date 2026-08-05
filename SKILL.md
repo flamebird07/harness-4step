@@ -1,7 +1,7 @@
 ---
 name: harness-4step
-description: "Enforce four-step code changes (v13.0.2: versioning: bump only last segment per change) with locked CLI binding (Step1=mimo, Step2-3=claude, Step4=mimo), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step."
-version: 13.0.3
+description: "Enforce four-step code changes (v13.0.5: Step1 adds version consistency check) with locked CLI binding (Step1=mimo, Step2-3=claude, Step4=mimo), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step."
+version: 13.0.5
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.3 — Claude CLI Locked Binding + Enforced Queue)
+# Harness 4-Step Method (v13.0.5 — Claude CLI Locked Binding + Enforced Queue)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -76,9 +76,33 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 | Step 3 | **Claude Code CLI** | `run_cli.py --step step3` | 300s | 按已批准方案实施 | 不能做方案/审查 |
 | Step 4 | **MiMo Code CLI** | `run_cli.py --step step4` | 180s | 一次精简重试，再拆分 | 不能改代码 |
 
+## Step 1 版本号一致性审查（v13.0.5 新增）
+
+**每次执行 Step 1 时，除了常规审查外，必须检查项目中所有文件的版本号是否一致。**
+
+审查范围：
+1. 扫描项目中所有可能包含版本号的文件（如 `package.json`、`setup.py`、`pyproject.toml`、`__version__` 变量、`version.py`、`Cargo.toml` 等）
+2. 提取每个文件中的版本号声明
+3. 比对所有版本号是否一致
+
+**不一致时的处理：**
+- 如果检测到版本号不一致，Step 1 必须在输出中明确列出不一致的文件及其版本号
+- 版本号不一致视为 Step 1 的发现项（finding），必须在 Step 2 方案中纳入修复计划
+- 版本号一致性是 Step 1 验证门的组成部分——不一致但未报告 = Step 1 验证失败
+
+**报告格式：**
+```
+版本号一致性检查：
+- 文件A: v1.2.3
+- 文件B: v1.2.3
+- 文件C: v1.2.4 <- 不一致
+-> 不一致项需在 Step 2 方案中修复
+```
+
 ## v13 强制执行门
 
 1. **绑定锁**：`~/.hermes/binding-lock.json` 是唯一绑定来源。`harness-config.yaml` 不能改 agent；只有用户明确授权文本通过 `--authorize-binding-change` 记录后才可改动。
+   - **诊断优先**：CLI 失败后，必须先诊断并分类失败原因（参见 Failure Classification Matrix），再考虑是否需要变更绑定。禁止在未诊断的情况下直接修改绑定来绕过失败。
 2. **原子队列**：先创建 `todo.json` 并 `--todo-next` 领取 item。每个 item 必须有单一验收目标和文件范围；`--todo-id` 是运行任一步骤的必填参数。
 3. **递归拆分**：同一只读步骤第二次失败/超时，item 自动标记 `split_required`；必须 `--todo-split` 生成子项，不能继续放大 prompt。
 4. **顺序与完成**：队列拒绝跳步；只有 Step 1–4 均成功才可 `--todo-finish --todo-state completed`。Step 4 的新问题必须入队。
@@ -194,11 +218,17 @@ CLI execution: SSH to 10.0.0.50 (PowerShell转义降级 → 本地batch文件方
 2. 第二次超时 -> 执行降级路径
 3. 在汇报中注明超时和降级
 
+### 超时必重试规则
+**exit 124（超时）永远不是跳过步骤的理由。** 任何 CLI 调用返回 exit 124 时：
+1. 必须精简 prompt 重试一次（不可跳过重试直接进入降级）
+2. 重试仍超时后，才可进入降级路径
+3. 严禁将 exit 124 视为"部分成功"或"可接受的超时"而跳过步骤
+
 ### Step 1/2: Codex CLI 超时
 精简版避免超时：
   codex exec -m gpt-5.6-luna --dangerously-bypass-approvals-and-sandbox --ephemeral "简短审查" 2>&1 | tail -60
 
-**Step 2 技术只读保障：** 必须使用 `--ephemeral` 标志（沙箱环境，不保留工作区改动）。执行后必须验证 `git status` 无变化；若有改动则 Step 2 失败，不可静默保留。
+**Step 2 技术只读保障：** 必须使用 `--ephemeral` 标志（沙箱环境，不保留工作区改动）。执行期间禁止任何文件修改（包括 apply、patch、write_file 操作）。执行后必须运行 `git status` 和 `git diff` 验证无变化；若检测到任何工作区改动，Step 2 视为失败，必须记录失败原因并进入重试/降级路径，不可静默保留改动。
 
 - 不要用 delegate_task 冒充 Codex
 - 不要手工写审查报告
@@ -317,6 +347,9 @@ Step 2: Codex CLI timed out (exit 124, empty output)
 | **认证失败** | HTTP 401/403、auth error | 否（直接降级） | 是（换 CLI） | 如果所有 CLI 都认证失败 |
 | **可执行文件失败** | EFTYPE、command not found、Missing dependency | 是（修复后重试） | 是（降级路径） | 如果修复也失败 |
 | **无效输出** | 输出存在但内容不相关（如帮助信息、错误日志） | 是（精简 prompt 重试） | 是（降级路径） | 否（2 次后才终止） |
+
+### 失败必须分类规则
+**任何 CLI 失败在采取行动前，必须先通过 Failure Classification Matrix 进行分类。** 禁止在未分类失败类型的情况下直接重试、降级或终止。分类结果决定后续路径（是否可重试、是否可降级、是否终止），不得跳过分类步骤。
 
 **重试规则**：
 - 同一失败类型最多重试 1 次
@@ -500,7 +533,8 @@ Self-audit (summary — see full 14-row audit above):
 3. 版本号 +1
 4. 在最终回复中向用户说明已修复的违规
 
-10. **自迭代例外是否用于修复 Step 4 review finding？** → 自迭代例外只能用于修复流程执行违规，不能用于修复 Step 4 review finding
+10. **Step 1 是否检查了版本号一致性？** → 必须扫描所有文件版本号并比对
+11. **自迭代例外是否用于修复 Step 4 review finding？** → 自迭代例外只能用于修复流程执行违规，不能用于修复 Step 4 review finding
 
 ### Enhanced Self-Audit
 
@@ -522,6 +556,7 @@ Self-audit (summary — see full 14-row audit above):
 | Fallbacks were used only when permitted | PASS / FAIL |
 | A valid terminal status was assigned | PASS / FAIL |
 | Step 4 findings were resolved through the loop mechanism (not direct patch) | PASS / FAIL |
+| Step 1 version consistency check was performed | PASS / FAIL |
 
 **任何一项为 FAIL，不得通过 self-audit。** 成功的 self-audit 不能覆盖失败的 CLI 验证、缺失的输出、未解决的 circuit breaker 或矛盾的工作区证据。
 
@@ -591,6 +626,8 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.5 (2026-08-05): Step 1 新增版本号一致性审查：每次执行时扫描所有文件版本号并比对，不一致项纳入 Step 2 方案修复。版本号 13.0.4 → 13.0.5。
+- v13.0.4 (2026-08-05): 4 项强化：绑定锁后新增诊断优先规则；Step 2 技术只读保障强化为显式禁止文件修改+git 验证+失败处理；CLI 超时处理新增 exit 124 必重试规则；失败分类矩阵后新增强制分类规则。
 - v13.0.3 (2026-08-04): Step1 绑定改为 mimo；CLI 选项内嵌到 AGENT_CLI；绑定变更通过单一 --authorize-binding-change 命令完成；版本号 13.0.2 → 13.0.3。
 - v13.0.2 (2026-08-04): 新增「拆分优化」「违规记录规范」两节；版本号 13.0.1 → 13.0.2。
 - v13.0.1 (2026-08-04): 新增版本号规则（每次修改只递增 patch 位）；Step4 绑定从 kimi 改为 mimo（mimo-v2.5-pro）。
