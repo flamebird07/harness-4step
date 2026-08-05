@@ -1,0 +1,36 @@
+在 fashion-imagegen 项目（C:\Users\Administrator\fashion-imagegen）实施修复，解决 Codex 配额超限时 Seedream fallback 被绕过的问题。严格只改 app/queue/worker.py 和 app/services/codex_runner.py 两个文件。
+
+【方案A 必须】在 app/queue/worker.py 的 _process_master 中，把 _recover_generation 调用处（约539-542行）用 try/except 包裹：
+```python
+try:
+    recovered = await self._recover_generation(
+        task_id, result, started, task_dir, results_dir,
+        raw_directory=raw_directory,
+    )
+except (RuntimeError, RecoveryError) as exc:
+    logger.warning(
+        "Codex generation failed for %s, will attempt Seedream fallback: %s",
+        task_id, exc,
+    )
+    await self._fail_safely(task_id, str(exc)[:4000])  # 转为终态，供 fallback 状态检查通过
+    recovered = None
+```
+保持后续 from_seedream / if recovered is None 的 fallback 逻辑不变。注意：_fail_safely 是已存在的私有方法（worker.py 约173行），确认它的签名和调用方式。
+
+【方案B 强烈建议】在 app/services/codex_runner.py 的 _is_image_endpoint_failure 静态方法中，扩展检测模式，加入配额相关关键字：
+```python
+return (
+    "image generation failed" in lowered
+    or "/backend-api/codex/images/edits" in lowered
+    or "429" in lowered
+    or "quota" in lowered
+    or "rate limit" in lowered
+    or "too many requests" in lowered
+)
+```
+
+不实施方案C（跳过重试）。只改这两个文件，不要改其他文件。
+
+实施后验证：
+python -c "from app.queue.worker import TaskWorker; from app.services.recovery import RecoveryError; from app.services.codex_runner import CodexRunner; print('ok')"
+能通过。并且 python -m py_compile app/queue/worker.py app/services/codex_runner.py 通过。

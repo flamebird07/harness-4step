@@ -1,0 +1,13 @@
+复审 fashion-imagegen 项目（C:\Users\Administrator\fashion-imagegen）刚修复的问题：Codex 配额超限时 Seedream fallback 被绕过。
+
+修改的文件（只这两个）：
+1. app/queue/worker.py - _process_master 中 _recover_generation 调用处加了 try/except (RuntimeError, RecoveryError)，except 中调用 _fail_safely 转终态并设 recovered=None，触发 Seedream fallback（约541-551行）
+2. app/services/codex_runner.py - _is_image_endpoint_failure 扩展了配额检测（429/quota/rate limit/too many requests，约481-488行）
+
+请复审：
+1. 修复是否正确、完整
+2. 是否真的解决了 fallback 被绕过的问题（异常不再穿透到 _fail_safely 而绕过 fallback）
+3. 是否有新引入的 bug 或副作用
+4. 是否保持了其他路径（Codex 正常生成、子图编辑）不变
+
+输出复审结论：PASS 或 FAIL + 具体问题清单。只复审，不修改代码。

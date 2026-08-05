@@ -1,0 +1,1 @@
+复审 fashion-imagegen 的修复（app/queue/worker.py 的 _process_master 捕获 RuntimeError/RecoveryError 触发 Seedream fallback；app/services/codex_runner.py 扩展配额检测）。请确认：修复是否解决了"Codex 配额超限时 Seedream fallback 被绕过"的核心问题？是否引入新 bug？请只回答 PASS 或 FAIL 并给出简要理由。

@@ -1,0 +1,13 @@
+为 fashion-imagegen 项目（C:\Users\Administrator\fashion-imagegen）设计修复方案，解决 Codex 配额超限时 Seedream fallback 被绕过的问题。只出方案，不改代码。
+
+已确认的根因（Step 1 审查）：
+【问题1 高】app/queue/worker.py 的 _recover_generation 第315行调用 self.recovery.recover() 时，RecoveryError 未捕获（对比同函数 264/287 行都捕获了）。异常沿 _recover_generation → _process_master → _process 传播，最终在 _run 的通用 except Exception（131-132行）被捕获走 _fail_safely，导致 _process_master 第544行 if recovered is None 的 Seedream fallback 被绕过。recovery.recover() 正常只返回列表或抛 RecoveryError，不会返回 None，所以绕过是稳定可复现的。
+
+【问题2 高】worker.py:631-638 审查失败分支用过期 retry_count 快照（方法开头读取的 task.retry_count），但 fallback 路径中 _recover_generation→_retry_or_finalize 已把 DB retry_count 中途加过。当 DB 计数达上限(3)而快照仍<3 时：先 transition(FAILED) 再 retry()，而 retry() 先 shutil.rmtree 清空 results/output 目录，之后才检查 retry_count>=3 抛 ValueError。导致刚生成的 Seedream 母图被删 + ValueError 冒泡到 _fail_safely。
+
+请设计修复方案，覆盖：
+1. 捕获 RecoveryError：在 _recover_generation 的 recovery.recover() 调用处捕获 RecoveryError，返回 None（使 fallback 触发），并记录日志。注意保持其他分支行为不变。
+2. 修复过期 retry_count 问题：确保审查失败分支用最新 DB retry_count，且不删已生成的 Seedream 母图。
+3. 验证步骤。
+
+请输出完整修复方案（具体到改哪个文件的哪几行、改成什么），只出方案不改代码。

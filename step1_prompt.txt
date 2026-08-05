@@ -1,0 +1,1 @@
+审查 fashion-imagegen 的 app/services/seedream_image_service.py（只有edit方法，无母图文生图）、app/queue/worker.py 的 _process_master、app/config.py 的 seedream_size="2K"。目标：母图加Seedream备选。已实测：POST /images/generations 支持文生图，model=doubao-seedream-5-0-lite-260128 有效，size必须小写2k/3k/4k。只列问题清单[file,line,symptom,impact]，不修复。

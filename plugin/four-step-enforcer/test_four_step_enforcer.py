@@ -386,6 +386,34 @@ def test_skill_manage_blocked(ctx):
     print("  ✅ PASS: skill_manage correctly blocked before delegate_task")
 
 
+def test_steps_must_be_ordered_and_never_unlock_direct_edits(ctx):
+    print("Test 15: ordered CLI steps never unlock direct edits...")
+    pre_hook = ctx.hooks["pre_tool_call"][0]
+    post_hook = ctx.hooks["post_tool_call"][0]
+    _session_states.clear()
+    session = "ordered-session"
+    post_hook(tool_name="terminal", args=make_args(command="python run_cli.py --step step2"),
+              session_id=session, status="success")
+    assert _session_states[session].next_step == "step1", "Out-of-order step must not advance state"
+    for step in ("step1", "step2", "step3", "step4"):
+        post_hook(tool_name="terminal", args=make_args(command=f"python run_cli.py --step {step}"),
+                  session_id=session, status="success")
+    assert _session_states[session].next_step == "finish"
+    result = pre_hook(tool_name="patch", args=make_args(path="test.py"), session_id=session)
+    assert result is not None and result["action"] == "block", "Direct patch must remain blocked after all CLI steps"
+    print("  ✅ PASS: sequence enforced and direct edits remain blocked")
+
+
+def test_direct_cli_bypass_is_blocked(ctx):
+    print("Test 16: direct CLI bypass is blocked...")
+    hook = ctx.hooks["pre_tool_call"][0]
+    result = hook(tool_name="terminal", args=make_args(command="codex exec --ephemeral review"), session_id="cli-bypass")
+    assert result is not None and result["action"] == "block"
+    allowed = hook(tool_name="terminal", args=make_args(command="python scripts/run_cli.py --step step1"), session_id="cli-bypass")
+    assert allowed is None
+    print("  ✅ PASS: direct CLI is blocked; runner is allowed")
+
+
 # ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
@@ -436,9 +464,13 @@ def main():
     
     test_skill_manage_blocked(ctx)
     print()
+    test_steps_must_be_ordered_and_never_unlock_direct_edits(ctx)
+    print()
+    test_direct_cli_bypass_is_blocked(ctx)
+    print()
     
     print("=" * 60)
-    print("All 14 tests PASSED ✅")
+    print("All 16 tests PASSED ✅")
     print("=" * 60)
     print()
     print("Summary:")
@@ -453,6 +485,8 @@ def main():
     print("  - TTL cleanup removes expired sessions")
     print("  - Max sessions limit enforced")
     print("  - Disabled mode allows all tools")
+    print("  - CLI steps are ordered and direct edits remain blocked")
+    print("  - Direct Codex/Kimi calls are blocked unless routed through run_cli.py")
 
 
 if __name__ == "__main__":

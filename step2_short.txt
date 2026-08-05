@@ -1,0 +1,1 @@
+为fashion-imagegen母图生成增加Seedream备选。改3文件：config.py加seedream_master_fallback_enabled和seedream_master_model配置；seedream_image_service.py加generate()文生图方法；worker.py _process_master在Codex失败时fallback到Seedream。输出精简方案，每文件列出改动点。

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+binding-lock.json
+harness-config.yaml
+todo.json

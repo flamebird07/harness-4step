@@ -76,7 +76,7 @@ AGENT_CLI = {
         "args_base": ["-p"],
         "output_parse": "plain",
         "step3_remove_args": ["-p"],
-        "args_extra": ["--dangerously-skip-permissions"],
+        "step3_extra_args": ["--dangerously-skip-permissions"],
     },
 }
 
@@ -259,8 +259,8 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
     if step == "step3":
         for arg in cli_info.get("step3_remove_args", []):
             args_base = [x for x in args_base if x != arg]
-    for arg in cli_info.get('args_extra', []):
-        args_base.append(arg)
+        for arg in cli_info.get('step3_extra_args', []):
+            args_base.append(arg)
     use_stdin = bool(cfg.get("use_stdin", False))
     cmd = [exe] + args_base + ([] if use_stdin else [prompt])
     d = Path.home() / ".hermes" / "harness-workspace" / task_id / step

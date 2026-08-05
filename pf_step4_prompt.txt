@@ -1,0 +1,15 @@
+复审 fashion-imagegen 项目（C:\Users\Administrator\fashion-imagegen）app/queue/worker.py 的修复，解决 Codex 失败触发 Seedream fallback 时任务被卡住/重试计数错误消耗的问题。
+
+修改的内容（只改 app/queue/worker.py）：
+1. _process_master except 块删除 _fail_safely 调用，改为直接进 Seedream fallback（传 allow_retry=False）
+2. _recover_generation 新增 allow_retry 参数（默认 True），master 场景传 False，各失败分支 allow_retry=False 时只 return None 不调 _retry_or_finalize
+3. _generate_master_seedream 兼容 RUNNING 状态转换
+4. review 失败分支改用最新 retry_count（重新 get）+ auto_retry_limit + _retry_or_finalize（统一出口，会 enqueue）
+
+请复审：
+1. 修复是否正确、完整解决了问题（Seedream母图被清空、任务卡住、重试计数错误消耗）
+2. 是否引入新 bug 或副作用
+3. 是否保持了其他路径（Codex 正常生成、子图编辑、标准模式）不变
+4. 是否有遗漏
+
+输出复审结论：PASS 或 FAIL + 具体问题清单。只复审，不修改代码。

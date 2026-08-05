@@ -62,6 +62,14 @@ def _is_run_cli_call(args: Any) -> bool:
     return "run_cli.py" in cmd and "--step" in cmd
 
 
+def _is_direct_harness_cli_call(args: Any) -> bool:
+    """Reject direct Codex/Kimi/Claude calls that would bypass reporting and evidence."""
+    if not isinstance(args, dict):
+        return False
+    cmd = str(args.get("command", "") or "").lower()
+    return any(token in cmd for token in ("codex exec", "kimi -p", "claude -p"))
+
+
 # ---------------------------------------------------------------------------
 # State management
 # ---------------------------------------------------------------------------
@@ -74,6 +82,8 @@ class SessionState:
     last_activity: float = field(default_factory=time.time)
     delegate_count: int = 0            # total delegates in this session
     blocked_count: int = 0             # total blocks in this session
+    completed_steps: Set[str] = field(default_factory=set)
+    next_step: str = "step1"
 
 # Module-level state store. Keyed by session_id (or task_id fallback).
 _session_states: Dict[str, SessionState] = {}
@@ -308,42 +318,44 @@ def _on_pre_tool_call(
     if tool_name == "terminal" and _is_run_cli_call(args):
         return None
 
+    if tool_name == "terminal" and _is_direct_harness_cli_call(args):
+        return {"action": "block", "message": (
+            "🚫 BLOCKED by harness-4step: invoke Codex/Kimi only through "
+            "run_cli.py so the to-do state, evidence, and per-step report are recorded."
+        )}
+
     # --- write_file/patch: check Step 1 ---
     if tool_name in _BLOCKED_TOOLS:
         # Check exemptions
         if _is_exempt(tool_name, args, state):
             return None
 
-        # Check if Step 1 has been completed
-        if not state.step1_done:
-            state.blocked_count += 1
+        # Direct tool edits can never substitute for a Step 3 CLI execution.
+        state.blocked_count += 1
 
-            # Build a helpful error message
-            blocked_tool = tool_name
-            message = (
-                f"🚫 BLOCKED by harness-4step: "
-                f"Cannot call '{blocked_tool}' before completing Step 1.\n\n"
-                f"The 4-step harness requires real CLI execution via run_cli.py "
-                f"before modifying any code.\n\n"
-                f"To proceed:\n"
-                f"1. Run: python scripts/run_cli.py --step step1 --task-id <id> "
-                f"--workspace <path> --prompt '<prompt>'\n"
-                f"2. Verify evidence: python scripts/run_cli.py --step step1 "
-                f"--task-id <id> --workspace . --verify-only\n"
-                f"3. Then retry this {blocked_tool} call\n\n"
-                f"Session: {session_key[:16]}... | "
-                f"Blocks so far: {state.blocked_count}\n\n"
-                f"To exempt: add to config exempt_tools or "
-                f"set FOUR_STEP_ENFORCER_ENABLED=0"
-            )
+        # Build a helpful error message
+        blocked_tool = tool_name
+        message = (
+            f"🚫 BLOCKED by harness-4step: "
+            f"Cannot call '{blocked_tool}' directly during a harness task.\n\n"
+            f"Code changes are permitted only through a successful Step 3 "
+            f"run_cli.py execution after Step 1 and Step 2.\n\n"
+            f"To proceed:\n"
+            f"1. Claim a to-do item with run_cli.py --todo-next\n"
+            f"2. Run Step 1 → Step 2 → Step 3 → Step 4 with --todo-id\n"
+            f"3. Finish or split the to-do item from its step report\n\n"
+            f"Session: {session_key[:16]}... | "
+            f"Blocks so far: {state.blocked_count}\n\n"
+            f"Only an explicit user-approved plugin configuration change may disable this gate."
+        )
 
-            logger.warning(
-                "harness-4step: BLOCKED %s for session %s "
-                "(step1_done=%s, blocks=%d)",
-                tool_name, session_key[:16], state.step1_done,
-                state.blocked_count,
-            )
-            return {"action": "block", "message": message}
+        logger.warning(
+            "harness-4step: BLOCKED %s for session %s "
+            "(next_step=%s, blocks=%d)",
+            tool_name, session_key[:16], state.next_step,
+            state.blocked_count,
+        )
+        return {"action": "block", "message": message}
 
     return None
 
@@ -390,10 +402,16 @@ def _on_post_tool_call(
         cmd = str((args or {}).get("command", "") or "")
         for step_name in ["step1", "step2", "step3", "step4"]:
             if f"--step {step_name}" in cmd or f"--step={step_name}" in cmd:
-                state.step1_done = True
+                if step_name != state.next_step:
+                    logger.warning("harness-4step: ignored out-of-order %s; expected %s", step_name, state.next_step)
+                    break
+                state.completed_steps.add(step_name)
+                state.step1_done = "step1" in state.completed_steps
                 state.step1_tool_name = f"run_cli.py:{step_name}"
-                logger.info("harness-4step: %s completed via run_cli.py (verified success) for session %s",
-                    step_name, session_key[:16])
+                index = ["step1", "step2", "step3", "step4"].index(step_name)
+                state.next_step = ["step2", "step3", "step4", "finish"][index]
+                logger.info("harness-4step: %s completed; next=%s for session %s",
+                    step_name, state.next_step, session_key[:16])
                 break
         return
 

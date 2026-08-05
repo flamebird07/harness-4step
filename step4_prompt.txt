@@ -1,0 +1,16 @@
+复审 fashion-imagegen 项目刚才的修改是否正确解决了"母图生成增加 Seedream 备选路径"的需求。项目根目录 C:\Users\Administrator\fashion-imagegen。
+
+需求：母图生成在 Codex 失败时自动 fallback 到 Seedream 文生图（model=seedream_master_model），成功生成并保存母图。
+
+修改的文件（只这三个）：
+1. app/config.py - 新增 seedream_master_fallback_enabled=False、seedream_master_model="doubao-seedream-5-0-260128"
+2. app/services/seedream_image_service.py - 提取 _post_and_download 共享方法；新增 generate()/_generate_sync() 文生图方法（无 image 字段，size 小写 "2k"）
+3. app/queue/worker.py - _process_master 在 _recover_generation 返回 None 时调用 _generate_master_seedream fallback；新增 helper；add_generation_record 区分来源（from_seedream 时 rule_version="seedream-master-v1", thread_id=f"seedream:{model}"）
+
+请复审：
+1. 三个文件的修改是否正确、完整
+2. fallback 逻辑是否有 bug（状态机转换、目录隔离、重试有界）
+3. 是否保持了 _process_edit 子图路径不变
+4. 是否有遗漏或潜在问题
+
+输出复审结论：PASS 或 FAIL + 具体问题清单。只复审，不修改代码。
