@@ -43,6 +43,10 @@ Baseline commit: <baseline_commit>
 Task objective: Step 4 re-review — verify the actual code changes fix the approved B1 Step 1 findings and align with the Step 2 approved plan.
 
 This is Step 4 of a four-step workflow. Review only the actual code changes.
+This is a static read-only review.
+Do NOT execute tests, builds, install dependencies, or any project commands.
+Do NOT treat missing Python/dependencies/tools in your environment as a code failure.
+Test results are provided by the harness; if none provided, mark as 'unverified' not FAIL.
 Do not modify files.
 Do not provide a repair plan.
 
@@ -58,6 +62,23 @@ Be precise and evidence-based. Do not speculate without code evidence.
 The diff is at C:\Users\Administrator\b1_baseline\<diff_file>
 The post-fix files are at C:\Users\Administrator\b1_baseline\post\
 ```
+
+### Step 4 JSON Output Contract (auto-enqueue)
+
+Step 4 must end its agent message with a fenced JSON findings block so the harness
+can auto-enqueue follow-up to-dos:
+
+```json
+{"findings": [{"id": "...", "title": "...", "acceptance": "...", "files": ["..."]}]}
+```
+
+- On PASS (all findings FIXED, no regressions), output `{"findings": []}`.
+- Each finding becomes a follow-up to-do; `title`, `acceptance`, and a non-empty
+  `files` list are required. An invalid entry is skipped without blocking the rest.
+- `id` must be unique within the queue; on conflict the harness falls back to
+  `{todo_id}-find-{i}`.
+- A message with no parseable JSON findings block is treated as a warning, not a
+  Step 4 failure.
 
 ## Verdict Categories
 

@@ -2,15 +2,14 @@
 """
 Unified CLI executor for the 4-step harness method.
 
-Default: Codex/Codex/Codex/Kimi (4-step harness contract).
-Users can override per-step via ~/.hermes/harness-config.yaml.
-For example, to use Claude for Step 1, create the config file with:
-  step1: {agent: claude}
+Step-to-CLI bindings are determined by binding-lock.json and may only be
+changed through the explicit authorization flow (--authorize-binding-change).
+Users can override per-step timeouts/descriptions via ~/.hermes/harness-config.yaml.
 
 No private paths are hardcoded — executables are resolved via shutil.which().
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, shutil, subprocess, sys, time
+import argparse, hashlib, json, os, re, shutil, subprocess, sys, time
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -19,6 +18,32 @@ from typing import Any
 from todo_queue import add as todo_add, finish as todo_finish, initialize as todo_initialize
 from todo_queue import begin_step as todo_begin_step, next_item as todo_next
 from todo_queue import record_step as todo_record_step, split as todo_split, summary as todo_summary
+from todo_queue import recover as todo_recover
+
+# ---------------------------------------------------------------------------
+# Step-specific prompt prefixes
+# ---------------------------------------------------------------------------
+STEP_PROMPT_PREFIXES = {
+    "step3": (
+        "IMPORTANT: This is Step 3 implementation. Implement only the approved changes and modify files as needed. "
+        "You may inspect and edit files required for the implementation, but do NOT run tests, builds, dependency installation, "
+        "application code, or other validation commands. "
+        "Do NOT treat missing test/build/runtime tools or dependencies as evidence that the implementation failed. "
+        "Report validation as not run or unverified, and do NOT claim that tests passed.\n\n"
+    ),
+    "step4": (
+        "IMPORTANT: This is a static read-only review. "
+        "Do NOT execute tests or commands. "
+        "Do NOT treat missing tools as failure.\n\n"
+    ),
+    "mimo": "【严格约束】不准虚构任何内容. 只能基于实际代码/文件内容输出. 如果不确定, 输出'我不确定'. 不准编造命令、参数、路径、降级路径.\n",
+}
+
+
+def apply_step_prompt_prefix(step: str, prompt: str) -> str:
+    prefix = STEP_PROMPT_PREFIXES.get(step)
+    return f"{prefix}{prompt}" if prefix else prompt
+
 
 # ---------------------------------------------------------------------------
 # Default configuration — step bindings (agent + timeout per step)
@@ -26,29 +51,25 @@ from todo_queue import record_step as todo_record_step, split as todo_split, sum
 
 DEFAULT_CONFIG = {
     "step1": {
-        "agent": "codex",
         "description": "Review: analyze, find root cause",
         "timeout_seconds": 120,
     },
     "step2": {
-        "agent": "codex",
         "description": "Plan: design fix approach (read-only)",
         "timeout_seconds": 120,
     },
     "step3": {
-        "agent": "codex",
         "description": "Execute: implement code changes",
         "timeout_seconds": 300,
     },
     "step4": {
-        "agent": "kimi",
         "description": "Re-review: verify changes (read-only)",
         "timeout_seconds": 180,
     },
 }
 
-# Default config matches the fixed v12.16 binding. Per-step overrides remain
-# available only when the user explicitly changes the binding.
+# Step bindings are enforced by binding-lock.json and may only be changed
+# through the explicit authorization flow.
 
 # Agent -> CLI executable mapping (resolved dynamically, no hardcoded paths)
 AGENT_CLI = {
@@ -64,6 +85,8 @@ AGENT_CLI = {
         "args_base": ["run", "--print-logs", "-m", "xiaomi/mimo-v2.5-pro"],
         "output_parse": "plain",
         "step3_remove_args": [],
+        "use_stdin": False,
+        "prompt_mode": "file",
     },
     "kimi": {
         "executable": "kimi",
@@ -165,7 +188,13 @@ def authorize_binding_change(step: str, agent: str, authorization: str) -> dict[
 
 
 def load_config(path: Path | None = None) -> HarnessConfig:
-    """Load the configuration model and retain legacy root-level step overrides."""
+    """Load the configuration model and retain legacy root-level step overrides.
+
+    Two-step construction: (1) build base config from DEFAULT_CONFIG + user
+    overrides (no agent field), (2) apply agent bindings from binding-lock.json.
+    When the lock file is missing, agents default to None so run_cli() can
+    fail-closed with a clear message rather than crashing at load time.
+    """
     source = path or _config_path()
     override = _load_user_config(source)
     legacy_steps = {name: value for name, value in override.items() if name in DEFAULT_CONFIG}
@@ -181,16 +210,25 @@ def load_config(path: Path | None = None) -> HarnessConfig:
     for name, agent in config.agents.items():
         if not isinstance(agent, dict) or not isinstance(agent.get("executable"), str) or not isinstance(agent.get("args_base", []), list):
             raise ValueError(f"Agent '{name}' must define string executable and list args_base.")
+    # Step 2: apply agent bindings from lock file.
+    try:
+        lock = load_binding_lock()
+    except ValueError:
+        # Lock file missing or invalid — set agent=None so run_cli() fail-closes.
+        for name in config.steps:
+            config.steps[name]["agent"] = None
+        return config
+    for name, agent_name in lock["bindings"].items():
+        user_agent = config.steps[name].get("agent")
+        if user_agent is not None and user_agent != agent_name:
+            raise ValueError(
+                f"Binding lock violation for {name}: configured '{user_agent}', locked '{agent_name}'. "
+                "Use --authorize-binding-change with the user's explicit authorization."
+            )
+        config.steps[name]["agent"] = agent_name
     for name, step in config.steps.items():
         if not isinstance(step, dict) or step.get("agent") not in config.agents:
             raise ValueError(f"Step '{name}' must reference a configured agent.")
-    lock = load_binding_lock()
-    for name, agent in lock["bindings"].items():
-        if config.steps[name].get("agent") != agent:
-            raise ValueError(
-                f"Binding lock violation for {name}: configured '{config.steps[name].get('agent')}', locked '{agent}'. "
-                "Use --authorize-binding-change with the user's explicit authorization."
-            )
     return config
 
 
@@ -245,9 +283,15 @@ class CliRunResult:
 
 def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             timeout_seconds: int | None = None) -> CliRunResult:
+    prompt = apply_step_prompt_prefix(step, prompt)
     config = load_config()
     cfg = config.step(step)
-    agent = cfg["agent"]
+    agent = cfg.get("agent")
+    if not agent:
+        return CliRunResult(step=step, agent=agent or "", command=[], started_at="",
+            finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
+            stderr_path="", evidence_path="", output_sha256="", success=False,
+            failure_reason=f"No agent bound for {step}. Check binding-lock.json.")
     exe = config.resolve_executable(agent)
     if not exe:
         return CliRunResult(step=step, agent=agent, command=[agent], started_at="",
@@ -261,12 +305,20 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             args_base = [x for x in args_base if x != arg]
         for arg in cli_info.get('step3_extra_args', []):
             args_base.append(arg)
-    use_stdin = bool(cfg.get("use_stdin", False))
-    cmd = [exe] + args_base + ([] if use_stdin else [prompt])
     d = Path.home() / ".hermes" / "harness-workspace" / task_id / step
     d.mkdir(parents=True, exist_ok=True)
     stdout_p, stderr_p, ev_p = d/"stdout.jsonl", d/"stderr.txt", d/"evidence.json"
     (d/"prompt.txt").write_text(prompt, encoding="utf-8")
+    # Agent-level use_stdin overrides step defaults. prompt_mode="file" passes the
+    # prompt via -f <prompt.txt> rather than a positional arg or stdin: long prompts
+    # are not truncated by Windows' 8191-char command-line limit, and mimo is not
+    # piped input that would hang a CLI that does not read stdin.
+    use_stdin = bool(cli_info.get("use_stdin", cfg.get("use_stdin", False)))
+    if cli_info.get("prompt_mode") == "file":
+        prompt_path = os.path.join(str(d), "prompt.txt")
+        cmd = [exe] + args_base + ["-f", prompt_path]
+    else:
+        cmd = [exe] + args_base + ([] if use_stdin else [prompt])
     t = timeout_seconds or cfg.get("timeout_seconds", 180)
     s0 = time.monotonic(); sa = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     try:
@@ -274,8 +326,8 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
         # They must be launched through cmd.exe rather than CreateProcess.
         use_shell = sys.platform == "win32" and Path(exe).suffix.lower() in {".cmd", ".bat"}
         r = subprocess.run(cmd, cwd=str(workspace),
-            input=prompt if cfg.get("use_stdin") else None,
-            stdin=None if cfg.get("use_stdin") else subprocess.DEVNULL,
+            input=prompt if use_stdin else None,
+            stdin=None if use_stdin else subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=t, shell=use_shell)
         ec, so, se = r.returncode, r.stdout, r.stderr
@@ -288,33 +340,41 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value)
         ec, so = -2, as_text(e.stdout)
         se = f"Timeout {t}s" + ("\n" + as_text(e.stderr) if e.stderr else "")
-    except Exception as e:
+    except BaseException as e:
         ec, so, se = -3, "", str(e)
     dm = int((time.monotonic()-s0)*1000); fa = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    stdout_p.write_text(so, encoding="utf-8"); stderr_p.write_text(se, encoding="utf-8")
-    h = hashlib.sha256(so.encode()).hexdigest()
-    am = None
-    output_parse = cli_info.get("output_parse", "plain")
-    if output_parse == "json_lines":
-        for ln in so.split("\n"):
-            if not ln.strip(): continue
-            try:
-                d2 = json.loads(ln)
-                if d2.get("type")=="item.completed" and d2.get("item",{}).get("type")=="agent_message":
-                    am = d2["item"].get("text","")
-            except: pass
-    else:
-        am = so.strip()
-    ok = ec == 0 and bool(so.strip())
-    fr = (f"Timeout after {t}s" if ec == -2 else f"Exit code: {ec}") if ec != 0 else ("Empty stdout" if not so.strip() else None)
-    ev = {"schema_version":1,"task_id":task_id,"step":step,"agent":agent,"executable":exe,
-          "command":cmd,"workspace":str(workspace),"started_at":sa,"finished_at":fa,
-          "duration_ms":dm,"exit_code":ec,"stdout_path":str(stdout_p),"stderr_path":str(stderr_p),
-          "output_sha256":h,"success":ok,"failure_reason":fr,
-          "agent_message_preview":(am or "")[:500] if am else None}
-    tmp = ev_p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(ev, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(ev_p)
+    try:
+        # Evidence persistence is best-effort: a write failure (disk full, no
+        # permission) must not orphan the step as "started" without a record.
+        stdout_p.write_text(so, encoding="utf-8"); stderr_p.write_text(se, encoding="utf-8")
+        h = hashlib.sha256(so.encode()).hexdigest()
+        am = None
+        output_parse = cli_info.get("output_parse", "plain")
+        if output_parse == "json_lines":
+            for ln in so.split("\n"):
+                if not ln.strip(): continue
+                try:
+                    d2 = json.loads(ln)
+                    if d2.get("type")=="item.completed" and d2.get("item",{}).get("type")=="agent_message":
+                        am = d2["item"].get("text","")
+                except (json.JSONDecodeError, ValueError): pass
+        else:
+            am = so.strip()
+        ok = ec == 0 and bool(so.strip())
+        fr = (f"Timeout after {t}s" if ec == -2 else f"Exit code: {ec}") if ec != 0 else ("Empty stdout" if not so.strip() else None)
+        ev = {"schema_version":1,"task_id":task_id,"step":step,"agent":agent,"executable":exe,
+              "command":cmd,"workspace":str(workspace),"started_at":sa,"finished_at":fa,
+              "duration_ms":dm,"exit_code":ec,"stdout_path":str(stdout_p),"stderr_path":str(stderr_p),
+              "output_sha256":h,"success":ok,"failure_reason":fr,
+              "agent_message_preview":(am or "")[:500] if am else None}
+        tmp = ev_p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(ev, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(ev_p)
+    except OSError as e:
+        return CliRunResult(step=step, agent=agent, command=cmd, started_at=sa, finished_at=fa,
+            duration_ms=dm, exit_code=-3, stdout_path=str(stdout_p), stderr_path=str(stderr_p),
+            evidence_path="", output_sha256="", success=False,
+            failure_reason=f"Failed to write evidence: {e}")
     return CliRunResult(step=step, agent=agent, command=cmd, started_at=sa, finished_at=fa,
         duration_ms=dm, exit_code=ec, stdout_path=str(stdout_p), stderr_path=str(stderr_p),
         evidence_path=str(ev_p), output_sha256=h, success=ok, failure_reason=fr, agent_message=am)
@@ -349,11 +409,113 @@ def print_config():
     print()
     for step in config.steps:
         cfg = config.step(step)
-        exe = config.resolve_executable(cfg["agent"])
-        status = "OK" if exe else "NOT FOUND"
-        print(f"  {step}: agent={cfg['agent']}, timeout={cfg.get('timeout_seconds')}s, exe={exe or 'N/A'} ({status})")
+        agent = cfg.get("agent")
+        if not agent:
+            print(f"  {step}: agent=UNBOUND, timeout={cfg.get('timeout_seconds')}s, exe=N/A (NO BINDING)")
+        else:
+            exe = config.resolve_executable(agent)
+            status = "OK" if exe else "NOT FOUND"
+            print(f"  {step}: agent={agent}, timeout={cfg.get('timeout_seconds')}s, exe={exe or 'N/A'} ({status})")
     print()
     print("Use 'agents', 'steps', and 'defaults' in harness-config.yaml; legacy root step overrides also work.")
+
+
+def _coerce_findings(data: Any) -> list[dict] | None:
+    """Normalize a parsed Step 4 payload into a list of finding dicts.
+
+    Accepts either the documented contract {"findings": [...]} or a bare list.
+    Returns None when the payload is structurally unrecognizable so callers can
+    treat it as a parse warning rather than a Step 4 failure. Non-dict entries
+    are dropped so one malformed finding does not sink the rest.
+    """
+    if isinstance(data, dict):
+        data = data.get("findings")
+    if not isinstance(data, list):
+        return None
+    return [f for f in data if isinstance(f, dict)]
+
+
+def _extract_findings_json(agent_message: str) -> list[dict] | None:
+    """Tolerantly extract findings from a Step 4 agent message (three layers).
+
+    Layer 1: the whole message is valid JSON.
+    Layer 2: a ```json ... ``` fenced block.
+    Layer 3: the first bare {...} block (DOTALL).
+    Returns None when no layer yields a recognizable findings payload so callers
+    can surface a parse warning rather than a Step 4 failure.
+    """
+    if not agent_message:
+        return None
+    # Layer 1: the whole message is valid JSON.
+    try:
+        findings = _coerce_findings(json.loads(agent_message))
+        if findings is not None:
+            return findings
+    except json.JSONDecodeError:
+        pass
+    # Layer 2: a ```json ... ``` fenced block.
+    for m in re.finditer(r"```(?:json)?\s*(.*?)```", agent_message, re.DOTALL):
+        block = m.group(1).strip()
+        try:
+            findings = _coerce_findings(json.loads(block))
+        except json.JSONDecodeError:
+            continue
+        if findings is not None:
+            return findings
+    # Layer 3: the first bare {...} block (DOTALL).
+    m = re.search(r"\{.*\}", agent_message, re.DOTALL)
+    if m:
+        try:
+            findings = _coerce_findings(json.loads(m.group(0)))
+            if findings is not None:
+                return findings
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def enqueue_step4_findings(task_id: str, todo_id: str, agent_message: str) -> list[dict]:
+    """Enqueue Step 4 findings as follow-up to-dos (auto-enqueue contract).
+
+    A parse failure is a warning, never a Step 4 failure; an invalid single
+    finding is skipped without affecting the others. On an id conflict, falls
+    back to {todo_id}-find-{i}.
+    """
+    findings = _extract_findings_json(agent_message)
+    if findings is None:
+        print(f"WARNING: Step 4 findings parse failed for {task_id}/{todo_id}; "
+              f"auto-enqueue skipped. agent_message: {agent_message!r}",
+              file=sys.stderr)
+        return []
+    used = {todo_id}
+    enqueued: list[dict] = []
+    for i, f in enumerate(findings, start=1):
+        item = {
+            "id": str(f.get("id") or f"{todo_id}-find-{i}"),
+            "title": str(f.get("title") or "").strip(),
+            "acceptance": str(f.get("acceptance") or "").strip(),
+            "files": f.get("files") if isinstance(f.get("files"), list) else [],
+        }
+        if not item["title"] or not item["acceptance"] or not item["files"]:
+            continue
+        if item["id"] in used:
+            item["id"] = f"{todo_id}-find-{i}"
+        used.add(item["id"])
+        try:
+            enqueued.append(todo_add(task_id, item))
+        except ValueError:
+            # The id already exists in the queue (in-batch dedup or an id already
+            # persisted). Fall back to the per-finding id and retry instead of
+            # silently dropping the finding.
+            item["id"] = f"{todo_id}-find-{i}"
+            used.add(item["id"])
+            try:
+                enqueued.append(todo_add(task_id, item))
+            except (ValueError, FileNotFoundError, json.JSONDecodeError):
+                continue
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return enqueued
 
 
 def print_step_report(result: CliRunResult, task_id: str, todo_id: str, queue_item: dict[str, Any] | None) -> None:
@@ -395,6 +557,7 @@ if __name__ == "__main__":
     p.add_argument("--todo-state", choices=["completed", "blocked"])
     p.add_argument("--todo-note", default="")
     p.add_argument("--todo-list", action="store_true")
+    p.add_argument("--todo-recover", metavar="ITEM_ID")
     a = p.parse_args()
     if a.show_config:
         print_config(); sys.exit(0)
@@ -408,7 +571,7 @@ if __name__ == "__main__":
         except ValueError as e:
             print(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)); sys.exit(1)
         sys.exit(0)
-    todo_action = any([a.todo_init, a.todo_add, a.todo_add_file, a.todo_split, a.todo_next, a.todo_finish, a.todo_list])
+    todo_action = any([a.todo_init, a.todo_add, a.todo_add_file, a.todo_split, a.todo_next, a.todo_finish, a.todo_list, a.todo_recover])
     if todo_action:
         if not a.task_id:
             p.error("--task-id is required for to-do operations")
@@ -431,6 +594,8 @@ if __name__ == "__main__":
                 if not a.todo_state:
                     p.error("--todo-state is required with --todo-finish")
                 output = todo_finish(a.task_id, a.todo_finish, a.todo_state, a.todo_note)
+            elif a.todo_recover:
+                output = todo_recover(a.task_id, a.todo_recover, a.todo_note)
             else:
                 output = todo_summary(a.task_id)
         except (ValueError, FileNotFoundError, json.JSONDecodeError) as e:
@@ -452,8 +617,21 @@ if __name__ == "__main__":
         print(json.dumps({"type": "harness_step_report", "success": False, "step": a.step,
                           "todo_id": a.todo_id, "failure_reason": str(e)}, ensure_ascii=False, indent=2))
         sys.exit(1)
-    r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt, timeout_seconds=a.timeout)
-    queue_item = todo_record_step(a.task_id, a.todo_id, a.step, r.success, r.evidence_path)
+    try:
+        r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt, timeout_seconds=a.timeout)
+    except BaseException as e:
+        # Fallback: never orphan a step as "started". If run_cli itself raises,
+        # synthesize a failed result so record_step still fires and the step closes.
+        r = CliRunResult(step=a.step, agent=a.agent or "", command=[], started_at="",
+            finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"), duration_ms=0, exit_code=-4,
+            stdout_path="", stderr_path="", evidence_path="", output_sha256="",
+            success=False, failure_reason=f"run_cli raised: {e}")
+    try:
+        queue_item = todo_record_step(a.task_id, a.todo_id, a.step, r.success, r.evidence_path)
+    except BaseException:
+        # A record_step failure must not mask the CLI result we already captured.
+        queue_item = None
+    enqueued = [] if a.step != "step4" else enqueue_step4_findings(a.task_id, a.todo_id, r.agent_message)
     # Print CLI invocation info for transparency
     print(f"\n{'='*60}")
     print(f"CLI Invoked: {r.agent.upper()}")
@@ -462,4 +640,6 @@ if __name__ == "__main__":
     print(f"{'='*60}\n")
     print(json.dumps(asdict(r), ensure_ascii=False, indent=2))
     print_step_report(r, a.task_id, a.todo_id, queue_item)
+    if enqueued:
+        print(f"Step 4: enqueued {len(enqueued)} follow-up to-do(s): {', '.join(x['id'] for x in enqueued)}")
     sys.exit(0 if r.success else 1)

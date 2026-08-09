@@ -100,6 +100,11 @@ def next_item(task_id: str) -> dict[str, Any] | None:
     completed = {x["id"] for x in data["items"] if x.get("state") == "completed"}
     for item in data["items"]:
         if item.get("state") == "pending" and set(item.get("depends_on", [])) <= completed:
+            if item.get("split_required"):
+                raise ValueError(
+                    f"Item '{item['id']}' requires split (read-only step failed twice); "
+                    "split it instead of reclaiming"
+                )
             item["state"] = "running"
             item.setdefault("next_step", "step1")
             item.setdefault("history", []).append({"event": "claimed"})
@@ -152,6 +157,24 @@ def finish(task_id: str, item_id: str, state: str, note: str = "") -> dict[str, 
     if state == "completed" and item.get("next_step") != "finish":
         raise ValueError("Cannot complete item until Step 1 through Step 4 all succeed")
     item["state"] = state; item.setdefault("history", []).append({"event": state, "note": note})
+    _write(path, data); return item
+
+
+def recover(task_id: str, item_id: str, note: str = "") -> dict[str, Any]:
+    """Return an orphaned running item to pending so it can be reclaimed.
+
+    Only a running item may be recovered. The split_required flag is preserved:
+    a split-forced item still blocks reclaim (next_item raises) until it is
+    split into children, so recovery cannot bypass the split gate.
+    """
+    path = queue_path(task_id); data = _read(path)
+    item = next((x for x in data["items"] if x["id"] == item_id), None)
+    if not item:
+        raise ValueError(f"Unknown to-do id: {item_id}")
+    if item.get("state") != "running":
+        raise ValueError("Only a running item may be recovered")
+    item["state"] = "pending"
+    item.setdefault("history", []).append({"event": "recovered", "note": note})
     _write(path, data); return item
 
 

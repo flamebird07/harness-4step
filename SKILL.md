@@ -1,7 +1,7 @@
 ---
 name: harness-4step
-description: "Enforce four-step code changes (v13.0.5: Step1 adds version consistency check) with locked CLI binding (Step1=mimo, Step2-3=claude, Step4=mimo), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step."
-version: 13.0.5
+description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step."
+version: 13.0.9
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,12 +11,12 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.5 — Claude CLI Locked Binding + Enforced Queue)
+# Harness 4-Step Method (v13.0.9 — Locked CLI Binding via binding-lock.json + Enforced Queue)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
 - All references in skill metadata, docs, memory, and other skills MUST use `harness-4step`. Never use the old name.
-- The 4-step method rules belong ONLY in this skill. Do NOT copy/paste 4-step rules, Step descriptions, MiMo/Codex CLI instructions, or Post-Completion Self-Audit templates into other skills (e.g. credential-pool-sync, bill-manager, etc.) — cross-contamination causes drift and confusion. Reference this skill instead.
+- The 4-step method rules belong ONLY in this skill. Do NOT copy/paste 4-step rules, Step descriptions, CLI instructions, or Post-Completion Self-Audit templates into other skills (e.g. credential-pool-sync, bill-manager, etc.) — cross-contamination causes drift and confusion. Reference this skill instead.
 
 ### 技能重命名后清理清单（Pitfall）
 
@@ -45,6 +45,25 @@ metadata:
 - **当前有效引用**（路径、名称、配置）→ 必须全部替换为新名称
 - **历史归档上下文**（整合记录、迁移说明、版本历史）→ 可以保留旧名称，但必须添加"旧名称，已归档/已重命名"的明确注释，避免读者误以为仍在使用
 
+## 三坑：跨 session 上下文断裂 / Windows 参数截断 / Step 3 必须产生 diff (Pitfall)
+
+以下三个坑在多次执行中反复出现，必须遵守其固定规则：
+
+1. **跨 session 上下文断裂**：
+   - 现象：新 session（fresh）启动后，上一 session 的语言设定、上下文、临时变量、未提交的中间状态全部丢失，后续步骤看起来"用了旧上下文"但实际已断。
+   - 规则：每个 session 开始时，必须显式重读必要的输入（如 SKILL.md、todo.json、binding-lock.json），不得假设上一 session 的上下文仍然有效。
+   - 触发：任何 fresh session 或 `--todo-next` 领取新 item 时，先校验本 session 实际可见的状态，再执行读操作。
+
+2. **Windows 命令行参数截断**：
+   - 现象：在 Windows 原生 shell 下，长参数（如很长的 prompt、含特殊字符的 `--args`）被截断或解析错误，导致 CLI 收到不完整参数而产生错误输出或被误判为失败。
+   - 规则：涉及长参数或复杂引号时，优先把 prompt 写入文件再在 CLI 中引用文件，避免直接在命令行内联超长/含特殊字符的参数；执行后校验 CLI 收到的参数完整。
+   - 触发：任何包含超长 prompt、特殊字符（引号/反斜杠/`&&`/`&`/`--flag`）或内联多行文本的 CLI 调用。
+
+3. **Step 3 必须产生 diff**：
+   - 现象：Step 3 声称"已实施"但工作区没有实际 diff，或只改了文件未留下可验证的变更证据，导致验证门无法通过却被当作完成。
+   - 规则：Step 3 结束后必须用 `git diff` / 文件内容确认实际产生了变更；无 diff = Step 3 失败，不得声称完成，必须回到 Step 3（或按降级路径）重做。
+   - 触发：任何 Step 3 汇报"完成/已实施"之前，必须先确认存在可验证的 diff 或文件变更。
+
 ## 配置与仓库隔离
 
 CLI 绑定（`binding-lock.json`、`harness-config.yaml`）是**本机配置**，不上传 GitHub。各机器可独立配置不同的 CLI 绑定，不影响仓库代码。
@@ -52,6 +71,27 @@ CLI 绑定（`binding-lock.json`、`harness-config.yaml`）是**本机配置**�
 - 改 CLI 绑定 → 只改本机 `binding-lock.json`，不需要修改仓库
 - 仓库只包含 `SKILL.md`、`run_cli.py` 等代码和文档
 - 代码是配置驱动的，`run_cli.py` 从本机配置读取绑定，自动适配不同 CLI
+
+## 支持的 CLI
+
+本技能支持以下 CLI 工具作为 4 步法的执行后端。下述命令与 `scripts/run_cli.py` 中 `AGENT_CLI` 配置完全一致：
+
+| CLI | 基础命令 | output_parse | step3 特殊处理 | 已知坑 |
+|-----|---------|--------------|---------------|--------|
+| Codex | `codex exec --ephemeral --skip-git-repo-check --sandbox danger-full-access --json` | json_lines | 移除 `--ephemeral`（保留会话） | JSON 解析失败会误报 |
+| Claude Code | `claude -p` | plain | 移除 `-p`，加 `--dangerously-skip-permissions` | step3 需权限参数 |
+| Kimi Code | `kimi -p` | plain | 无 | `-p` 参数不读 stdin，必须 use_stdin=false |
+| Mimo Code | `mimo run --print-logs -m xiaomi/mimo-v2.5-pro` | plain | 无 | step3 prompt 加保护前缀（避免自跑测试） |
+
+### Windows 兼容性
+
+所有 `.cmd`/`.bat` 通过 shell 启动（避免 CreateProcess 失败）。
+
+### 绑定机制
+
+- Agent 绑定由 `binding-lock.json` 决定，支持**步骤级粒度**（同一 CLI 可绑定不同步骤）
+- `harness-config.yaml` 可配置超时、prompt 模板等，但**不能更改 agent 绑定**
+- 绑定变更必须通过 `--authorize-binding-change` 命令记录用户明确授权
 
 ## 版本号规则
 
@@ -63,7 +103,7 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 
 ## Core Principle
 
-**Role label != Execution.** Real CLI execution requires calling the actual tool binary — run_cli.py (locked: step1=mimo, step2-3=claude, step4=mimo). No delegating the task to a subagent and calling that "CLI execution." This skill harnesses the structured workflow to prevent process violations.
+**Role label != Execution.** Real CLI execution requires calling the actual tool binary — run_cli.py (bindings decided by binding-lock.json). No delegating the task to a subagent and calling that "CLI execution." This skill harnesses the structured workflow to prevent process violations.
 
 ## The 4-Step Method
 
@@ -71,10 +111,10 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 
 | Step | Agent | Real CLI | Timeout | Fallback | 限制 |
 |------|-------|----------|---------|----------|------|
-| Step 1 | **MiMo Code CLI** | `run_cli.py --step step1` | 120s | 一次精简重试，再拆分 | 不能改代码 |
-| Step 2 | **Claude Code CLI** | `run_cli.py --step step2` | 120s | 一次精简重试，再拆分 | 不能改代码 |
-| Step 3 | **Claude Code CLI** | `run_cli.py --step step3` | 300s | 按已批准方案实施 | 不能做方案/审查 |
-| Step 4 | **MiMo Code CLI** | `run_cli.py --step step4` | 180s | 一次精简重试，再拆分 | 不能改代码 |
+| Step 1 | 由 binding-lock.json 决定 | `run_cli.py --step step1` | 120s | 一次精简重试，再拆分 | 不能改代码 |
+| Step 2 | 由 binding-lock.json 决定 | `run_cli.py --step step2` | 120s | 一次精简重试，再拆分 | 不能改代码 |
+| Step 3 | 由 binding-lock.json 决定 | `run_cli.py --step step3` | 300s | 按已批准方案实施 | 不能做方案/审查 |
+| Step 4 | 由 binding-lock.json 决定 | `run_cli.py --step step4` | 180s | 一次精简重试，再拆分 | 不能改代码 |
 
 ## Step 1 版本号一致性审查（v13.0.5 新增）
 
@@ -104,6 +144,7 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 1. **绑定锁**：`~/.hermes/binding-lock.json` 是唯一绑定来源。`harness-config.yaml` 不能改 agent；只有用户明确授权文本通过 `--authorize-binding-change` 记录后才可改动。
    - **诊断优先**：CLI 失败后，必须先诊断并分类失败原因（参见 Failure Classification Matrix），再考虑是否需要变更绑定。禁止在未诊断的情况下直接修改绑定来绕过失败。
 2. **原子队列**：先创建 `todo.json` 并 `--todo-next` 领取 item。每个 item 必须有单一验收目标和文件范围；`--todo-id` 是运行任一步骤的必填参数。
+2b. **队列恢复**：孤儿 running item（如 session 中断遗留、无人领取）用 `--todo-recover` 归还为 pending 以便重新领取；recover **保留 `split_required` 标记**，已触发拆分的 item 恢复后仍禁止直接领取，必须 `--todo-split` 拆分子项，不能借此绕过拆分门。
 3. **递归拆分**：同一只读步骤第二次失败/超时，item 自动标记 `split_required`；必须 `--todo-split` 生成子项，不能继续放大 prompt。
 4. **顺序与完成**：队列拒绝跳步；只有 Step 1–4 均成功才可 `--todo-finish --todo-state completed`。Step 4 的新问题必须入队。
 5. **逐步汇报**：`run_cli.py` 在每次成功、失败或超时后都输出 `Harness Step Report`，并把证据写入 item 历史。禁止静默 CLI 调用。
@@ -224,10 +265,11 @@ CLI execution: SSH to 10.0.0.50 (PowerShell转义降级 → 本地batch文件方
 2. 重试仍超时后，才可进入降级路径
 3. 严禁将 exit 124 视为"部分成功"或"可接受的超时"而跳过步骤
 
-### Step 1/2: Codex CLI 超时
+### Step 1 超时
 精简版避免超时：
   codex exec -m gpt-5.6-luna --dangerously-bypass-approvals-and-sandbox --ephemeral "简短审查" 2>&1 | tail -60
 
+### Step 2 超时
 **Step 2 技术只读保障：** 必须使用 `--ephemeral` 标志（沙箱环境，不保留工作区改动）。执行期间禁止任何文件修改（包括 apply、patch、write_file 操作）。执行后必须运行 `git status` 和 `git diff` 验证无变化；若检测到任何工作区改动，Step 2 视为失败，必须记录失败原因并进入重试/降级路径，不可静默保留改动。
 
 - 不要用 delegate_task 冒充 Codex
@@ -235,7 +277,7 @@ CLI execution: SSH to 10.0.0.50 (PowerShell转义降级 → 本地batch文件方
 - Step 2 输出方案文字，不调用 apply/edit 工具
 
 
-### Step 3: Codex CLI 超时
+### Step 3 超时
 降级路径：
   方案1: 写 prompt 文件再 exec
   方案2: 分段 codex exec
@@ -243,7 +285,7 @@ CLI execution: SSH to 10.0.0.50 (PowerShell转义降级 → 本地batch文件方
 - 降级后仍需要验证结果
 - 降级不是跳过步骤，而是换工具完成同一件事
 
-### Step 4: Kimi CLI 超时
+### Step 4 超时
 **降级路径（按顺序）：**
 1. 短英文提示 + timeout 180s 重试一次
 2. 仍失败 → 报告工具不可用，不切换其他 CLI
@@ -332,7 +374,7 @@ Self-audit correction exception: <发现的问题>; files in scope: <文件范�
 Step 2 complete ✅（11 点修复方案）
 
 // 正确 ✅
-Step 2: Codex CLI timed out (exit 124, empty output)
+Step 2: CLI timed out (exit 124, empty output)
 → 精简 prompt 重试
 → 第二次仍超时
 → 降级到本地验证
@@ -451,7 +493,7 @@ Step 3 完成后，必须捕获相应的执行后状态并与基线对比：
 ```
 Terminal status: <COMPLETED | BLOCKED_CLI_FAILURE | FAILED_VERIFICATION | ABORTED_SCOPE_VIOLATION>
 
-Step 1: Codex CLI review
+Step 1: review
 - Attempt: <number of attempts>
 - CLI: <CLI name>
 - Exit code: <code or timeout>
@@ -460,7 +502,7 @@ Step 1: Codex CLI review
 - Verification result: <passed/failed>
 - Fallback reason: <none or specific reason>
 
-Step 2: Codex CLI plan
+Step 2: plan
 - Attempt: <number of attempts>
 - CLI: <CLI name>
 - Exit code: <code or timeout>
@@ -469,7 +511,7 @@ Step 2: Codex CLI plan
 - Verification result: <passed/failed>
 - Fallback reason: <none or specific reason>
 
-Step 3: Codex CLI execute
+Step 3: execute
 - Attempt: <number of attempts>
 - CLI: <CLI name>
 - Exit code: <code or timeout>
@@ -481,7 +523,7 @@ Step 3: Codex CLI execute
 - Postcondition verified: <yes/no>
 - Workspace changes: <summary>
 
-Step 4: Kimi CLI review
+Step 4: review
 - Attempt: <number of attempts>
 - CLI: <CLI name>
 - Exit code: <code or timeout>
@@ -518,7 +560,7 @@ Self-audit (summary — see full 14-row audit above):
 2. **Step 3 是否使用了正确的 CLI？** → 以 binding-lock.json 绑定为准
 3. **Step 1/2 是否用了正确的 CLI？** → 以 binding-lock.json 绑定为准
 4. **所有步骤是否都调用了真实 CLI？** → 不能用 Hermes 工具（patch/write_file/terminal）代替
-5. **绑定 CLI 超时/失败后是否只重试了绑定 CLI？** → 只能重试绑定 CLI，不得切换到其他工具
+5. **绑定 CLI 变更是否仅用于基础设施配置调整？** → 绑定 CLI 变更只能用于基础设施配置调整, 不得作为内容修复或 Step 产出质量修复手段. 触发绑定变更前必须先完成 Step 2→3→4 循环优化当前 agent. 违规形态包括: (a) 为修正某 agent 输出内容而切到另一 agent; (b) 因当前 agent 质量问题而临时切走; (c) 同一任务中途为绕过失败而切换绑定.
 6. **Step 4 复审后是否有未处理的警告？** → Step 4 指出的问题必须进入循环
 7. **是否跳过了 Step 2 或 Step 4？** → 必须完整执行 4 个步骤
 8. **是否在每一步前都声明了 CLI？** → Step 1-4 前都必须声明对应 CLI
@@ -590,7 +632,7 @@ This rule applies equally when the target is SKILL.md, another skill file, docum
 循环在以下任一条件满足时必须终止（不等待达到最大循环数）：
 1. **Circuit breaker 打开**：全局熔断触发，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
 2. **累计 3 步骤失败**：任何步骤的输出为空、超时或无效，累计 3 次，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
-3. **所有 CLI 不可用**：Codex 和 MiMo 都认证失败或工具不可用，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
+3. **所有 CLI 不可用**：Codex 和 Kimi 都认证失败或工具不可用，立即终止，终端状态 `BLOCKED_CLI_FAILURE`
 4. **用户取消**：用户明确要求停止，立即终止，终端状态 `CANCELLED_BY_USER`
 
 ### 禁止中途汇报中断循环（v12.2.1 新增）
@@ -626,6 +668,22 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.9 (patch 1, 2026-08-09): 违规清单第 5 项加宽, 明确'为修正某 agent 而切换绑定'属于绕过型违规. 起因: doc-supported-clis Step3 (mimo) 虚构内容, 我错误用 --authorize-binding-change 临时切到 claude 修正. 教训: 内容质量问题应走 Step 2→3→4 循环, 不是切绑定.
+- v13.0.9 (2026-08-09):
+  - Step 3 绑定 claude → mimo
+  - Step 4 绑定 kimi → codex (Kimi 403 用量耗尽后正式切换)
+  - DEFAULT_CONFIG 不再含 agent, binding-lock.json 是唯一绑定来源 (隐私解耦, 适配 GitHub 推送)
+  - protect-mimo-step3: 抽出通用 helper apply_step_prompt_prefix, 给 step3 (mimo) 加 prompt 前缀允许读+改文件, 禁止自跑测试
+  - auto-enqueue-findings: Step 4 findings 自动入队 (三层宽容解析 + 告警 + ID 冲突回退)
+  - fix-codex-step4: Codex Step 4 prompt 明确禁止自跑测试 (此前 Kimi 误判的前置修复)
+  - Step 4 Kimi 403 时降级到 Codex (单次破例, 不修改 binding-lock)
+  - fix-responses-path: /responses API 路径支持
+  - sync-switch-doc: main-model-switch.md 同步 v7.13.2
+  - fix-false-unavailable: tk() 三态请求体 + saw_transient + S_T 暂不可用
+  - fix-sync-status-wrong: __RECORD__ status 反映真实状态 + 新增 --show-feishu-status 只读命令
+  - show_feishu_status: 新增只读命令, 独立查飞书真实状态
+- v13.0.8 (2026-08-09): CLI 绑定 relock — Step 1 绑定 mimo → codex，Step 4 绑定 mimo → kimi；锁到的绑定文本改为 Codex/Claude/Claude/Kimi；Step 1/2 超时标题拆分为 Step 1 Codex / Step 2 Claude，Step 3 超时标题 Codex → Claude；汇报模板 Step 2/3 Codex → Claude；循环终止条件 MiMo → Kimi。版本号 13.0.7 → 13.0.8。
+- v13.0.7 (2026-08-09): 新增「跨session上下文断裂/Windows命令行参数截断/Step3必须产生diff」三坑 Pitfall 章节；版本号 13.0.6 → 13.0.7。
 - v13.0.6 (2026-08-05): 修复 run_cli.py 中 Claude CLI 的 `--dangerously-skip-permissions` 对所有步骤生效的违规：`args_extra` 重命名为 `step3_extra_args`，仅在 Step 3 时添加。Step 1/2 为只读步骤，不应有文件修改权限。版本号 13.0.5 → 13.0.6。
 - v13.0.5 (2026-08-05): Step 1 新增版本号一致性审查：每次执行时扫描所有文件版本号并比对，不一致项纳入 Step 2 方案修复。版本号 13.0.4 → 13.0.5。
 - v13.0.4 (2026-08-05): 4 项强化：绑定锁后新增诊断优先规则；Step 2 技术只读保障强化为显式禁止文件修改+git 验证+失败处理；CLI 超时处理新增 exit 124 必重试规则；失败分类矩阵后新增强制分类规则。

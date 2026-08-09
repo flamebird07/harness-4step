@@ -68,6 +68,34 @@ class TodoQueueTests(unittest.TestCase):
         self.complete_steps("item")
         self.assertEqual(todo_queue.finish("test-task", "item", "completed")["state"], "completed")
 
+    def test_recover_returns_orphaned_running_item_to_pending(self):
+        todo_queue.add("test-task", self.item("item", ["a.py"]))
+        self.assertEqual(todo_queue.next_item("test-task")["id"], "item")
+        item = todo_queue.recover("test-task", "item")
+        self.assertEqual(item["state"], "pending")
+        self.assertEqual(todo_queue.summary("test-task")["counts"]["pending"], 1)
+
+    def test_recover_rejects_non_running_item(self):
+        todo_queue.add("test-task", self.item("item", ["a.py"]))
+        with self.assertRaisesRegex(ValueError, "running"):
+            todo_queue.recover("test-task", "item")
+
+    def test_recover_rejects_unknown_item_id(self):
+        todo_queue.add("test-task", self.item("item", ["a.py"]))
+        with self.assertRaisesRegex(ValueError, "Unknown to-do id"):
+            todo_queue.recover("test-task", "missing")
+
+    def test_split_required_blocks_reclaim_after_recover(self):
+        todo_queue.add("test-task", self.item("item", ["a.py"]))
+        todo_queue.next_item("test-task")
+        for _ in range(2):
+            todo_queue.begin_step("test-task", "item", "step1")
+            todo_queue.record_step("test-task", "item", "step1", False, "failure.json")
+        todo_queue.recover("test-task", "item")
+        self.assertEqual(todo_queue.summary("test-task")["counts"]["pending"], 1)
+        with self.assertRaisesRegex(ValueError, "requires split"):
+            todo_queue.next_item("test-task")
+
 
 if __name__ == "__main__":
     unittest.main()
