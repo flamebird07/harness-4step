@@ -1,12 +1,12 @@
 # 4步法强制执行系统 (Harness 4-Step Method)
 
-> **v13.0.9** — 绑定锁 + 原子队列 + 递归拆分；每步 CLI 绑定由 binding-lock.json 决定
+> **v13.0.11** — 绑定锁 + 原子队列 + 递归拆分；每步 CLI 绑定由 binding-lock.json 决定
 
 ## 系统组成
 
 | 组件 | 作用 |
 |------|------|
-| SKILL.md | 定义4步法规则和流程（v13.0.9） |
+| SKILL.md | 定义4步法规则和流程（v13.0.11） |
 | plugin/ | harness-4step 技术强制执行插件 |
 | references/ | 参考文档（CLI 语法、故障诊断、会话取证） |
 | scripts/ | 工具脚本 |
@@ -76,7 +76,10 @@ cp -r plugin/harness-4step ~/.hermes/plugins/
 
 ## 版本历史
 
-- v13.0.8 (2026-08-09): CLI 绑定 relock — Step 1 绑定 mimo → codex，Step 4 绑定 mimo → kimi。版本号 13.0.7 → 13.0.8。
+- v13.0.11 (2026-08-09): 新增子项并行执行（delegate_task 派发多子 Agent 同时跑各自 4 步法）；新增拆分边界规则（最小粒度、最大深度 3 层、BLOCKED_SPLIT_LIMIT）；split 事件必填 reason 字段。
+- v13.0.10 (2026-08-09): 修复 harness-config.yaml steps 段硬编码 agent 绑定导致的跨实例兼容缺陷。移除 steps 段的 agent 字段，完全由 binding-lock.json 控制。
+- v13.0.9 (2026-08-09): DEFAULT_CONFIG 不再含 agent，binding-lock.json 唯一绑定来源（隐私解耦）；mimo 修复（prompt_mode=file、use_stdin=false）；apply_step_prompt_prefix helper；auto-enqueue-findings；fix-codex-step4；plugin v3.0.0 独立版本化；违规清单第5项加宽。
+- v13.0.8 (2026-08-09): CLI 绑定 relock — Step 1 绑定 mimo → codex — Step 1 绑定 mimo → codex，Step 4 绑定 mimo → kimi。版本号 13.0.7 → 13.0.8。
 - v13.0.7 (2026-08-09): 新增「跨session上下文断裂/Windows命令行参数截断/Step3必须产生diff」三坑 Pitfall 章节；版本号 13.0.6 → 13.0.7。
 - v13.0.6 (2026-08-05): 修复 run_cli.py 中 Claude CLI 的 `--dangerously-skip-permissions` 对所有步骤生效的违规：`args_extra` 重命名为 `step3_extra_args`，仅在 Step 3 时添加。Step 1/2 为只读步骤，不应有文件修改权限。版本号 13.0.5 → 13.0.6。
 - v13.0.5 (2026-08-05): Step 1 新增版本号一致性审查：每次执行时扫描所有文件版本号并比对，不一致项纳入 Step 2 方案修复。版本号 13.0.4 → 13.0.5。

@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step."
-version: 13.0.9
+version: 13.0.11
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.9 — Locked CLI Binding via binding-lock.json + Enforced Queue)
+# Harness 4-Step Method (v13.0.11 — Locked CLI Binding via binding-lock.json + Enforced Queue)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -649,6 +649,56 @@ Step 3 完成后必须立即进入 Step 4，**不得以"达到工具调用上限
 3. 顺序执行：子项按创建顺序进入队列，队列拒绝跳步；每个子项独立完成 Step 1–4 后才能领取下一个。
 4. 递归拆分：子项仍超时则继续递归拆分，不得延长超时或扩大 prompt；每次拆分必须记录理由。
 5. 记录证据：在 todo.json 的 split 事件中写入拆分原因，作为汇报证据。
+6. **split 事件必填 `reason` 字段**：每次 `--todo-split` 生成的 split 事件必须携带必填文本字段 `reason`，内容为"两次只读失败的原因 + 提议的子项拆分策略"。示例：`{"event":"split","reason":"step1 read-only timeout after 2 attempts"}`。缺失 `reason` 的 split 事件视为无效，不得进入拆分流程。
+
+### 拆分边界规则（v13.0.11 新增）
+递归拆分必须遵守以下边界，防止拆成不可验收的碎片或无限递归：
+1. **最小粒度**：原子子项按函数或行区间拆分，禁止切割到语句中间或跨函数拆半；每个子项至少是一个完整、可独立验收的单元（单一函数/单一行区间）。
+2. **最大深度**：递归拆分最大深度为 3 层；超过后不再拆分，不延长超时、不放大 prompt。
+3. **依赖继承**：子项自动继承父 item 的 `depends_on` 与文件范围约束；拆分不改动父 item 已有的依赖关系。
+4. **终止状态**：已达最小粒度（单一函数/行区间）仍失败或超时的 item 标记为 `BLOCKED_SPLIT_LIMIT`，按 Failure Classification Matrix 进入降级路径，不得继续递归拆分。递归深度达到第3层但仍未达到最小粒度且执行失败，同样标记 `BLOCKED_SPLIT_LIMIT`。
+
+### 子项并行执行（v13.0.11 新增）
+
+当 todo 队列中有多个**无依赖关系**的 pending item 时，可以使用  派发多个子 Agent 并行执行各自的 4 步法，显著加快整体进度。
+
+**触发条件**：
+- 队列中有 2+ 个 pending item
+- item 之间无 depends_on 依赖
+- 每个 item 的文件范围不重叠（避免 Step 3 写冲突）
+
+**执行模式**：
+
+父 Agent 通过 delegate_task 派发多个子 Agent，每个子 Agent 独立跑完整的 4 步法。父 Agent 负责 fan-out 与 fan-in：
+
+```text
+# fan-out：为每个无依赖 pending item 派发一个子 Agent
+for item in queue.pending_without_dependency():
+    delegate_subagent(item, run_4step=full)   # 每个子 Agent 跑自己的 Step1→2→3→4
+
+# 并发上限：最多同时 3 个子 Agent
+concurrency_limit = delegation.max_concurrent_children   # 默认 3
+scheduler.schedule(children, concurrency_limit)
+```
+
+fan-in：所有子 Agent 完成后，父 Agent 汇总每个 item 的 terminal status（COMPLETED /
+BLOCKED_CLI_FAILURE / FAILED_VERIFICATION / ABORTED_SCOPE_VIOLATION / BLOCKED_SPLIT_LIMIT），任一子 Agent 非
+COMPLETED 则整体流程相应降级，再统一向用户汇报。
+
+失败处理：某个子 Agent 失败不阻塞其他 item 的执行；失败的 item 标记 `split_required`，
+按「拆分优化」规则递归拆分，父 Agent 等待剩余子 Agent 完成后再统一处理拆分子项。
+
+**约束**：
+1. 每个子 Agent 独立运行完整的 Step 1→2→3→4 流程
+2. 子 Agent 必须使用 run_cli.py（不能模拟 CLI）
+3. 子 Agent 的工作目录必须指向项目根目录
+4. 并行执行仅限无依赖的 item；有 depends_on 的 item 必须等前置 item 完成
+5. 最多同时 3 个子 Agent（delegation.max_concurrent_children 限制）
+6. 子 Agent 完成后，父 Agent 验证所有 item 的 terminal status 再汇报
+
+**与拆分优化的关系**：
+- 拆分（split）产生无依赖的子项 → 自动满足并行条件
+- 递归拆分的子项仍需顺序执行（拆分意味着前一项超时，可能有隐藏依赖）
 
 ### 违规记录规范（v13.0.2 新增）
 自我审查发现的每项流程执行违规，必须按以下规范记录，不得省略或掩盖：
@@ -668,6 +718,8 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.11 (2026-08-09): 新增子项并行执行能力（delegate_task 派发多子 Agent 同时跑各自 4 步法），显著加快拆分后的整体进度。
+- v13.0.10 (2026-08-09): 修复 harness-config.yaml steps 段硬编码 agent 绑定导致的跨实例兼容缺陷。移除 steps 段的 agent 字段，完全由 binding-lock.json 控制。根因：harness-config.yaml 和 binding-lock.json 同时定义 agent 绑定，load_config() 合并时 binding-lock 覆盖 harness-config，但如果两个 Hermes 实例的 binding-lock 版本不同（如一个 step3=mimo），会导致不可预期的 CLI 调用失败。
 - v13.0.9 (patch 1, 2026-08-09): 违规清单第 5 项加宽, 明确'为修正某 agent 而切换绑定'属于绕过型违规. 起因: doc-supported-clis Step3 (mimo) 虚构内容, 我错误用 --authorize-binding-change 临时切到 claude 修正. 教训: 内容质量问题应走 Step 2→3→4 循环, 不是切绑定.
 - v13.0.9 (2026-08-09):
   - Step 3 绑定 claude → mimo
