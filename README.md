@@ -1,12 +1,14 @@
 # 4步法强制执行系统 (Harness 4-Step Method)
 
-> **v13.0.11** — 绑定锁 + 原子队列 + 递归拆分；每步 CLI 绑定由 binding-lock.json 决定
+> **v13.0.12** — 绑定锁 + 原子队列 + 递归拆分；每步 CLI 绑定由 binding-lock.json 决定。单一项目兼容 Hermes/opencode，共享逻辑在 `shared/`。
 
 ## 系统组成
 
 | 组件 | 作用 |
 |------|------|
-| SKILL.md | 定义4步法规则和流程（v13.0.11） |
+| shared/ | **唯一逻辑源**：core-logic.md（四步法逻辑）+ binding-recommendation.md（推荐表） |
+| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.12） |
+| opencode/ | opencode 适配层：SKILL.md + 4 个 harness-* subagents + README |
 | plugin/ | harness-4step 技术强制执行插件 |
 | references/ | 参考文档（CLI 语法、故障诊断、会话取证） |
 | scripts/ | 工具脚本 |

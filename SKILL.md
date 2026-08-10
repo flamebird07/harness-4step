@@ -1,7 +1,7 @@
 ---
 name: harness-4step
-description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step."
-version: 13.0.11
+description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode，共享逻辑在 shared/ 目录。"
+version: 13.0.12
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.11 — Locked CLI Binding via binding-lock.json + Enforced Queue)
+# Harness 4-Step Method (v13.0.12 — Locked CLI Binding via binding-lock.json + Enforced Queue)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -104,6 +104,19 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 ## Core Principle
 
 **Role label != Execution.** Real CLI execution requires calling the actual tool binary — run_cli.py (bindings decided by binding-lock.json). No delegating the task to a subagent and calling that "CLI execution." This skill harnesses the structured workflow to prevent process violations.
+
+## 跨平台架构（v13.0.12 新增）
+
+四步法是一个**单一项目**（GitHub: `flamebird07/harness-4step`），同时兼容 Hermes 与 opencode：
+
+- **共享核心**：四步法逻辑、编号追溯、绑定语义、循环、基线、违规处理 = 平台无关，唯一逻辑源在 `shared/core-logic.md`。**任何逻辑优化只改该文件一次，双平台同步生效**，禁止在各适配层复制逻辑实现。
+- **适配层各司其职**：平台差异（CLI 调用方式、subagent 权限、队列机制、超时/熔断等）只写在各平台的适配层。
+  - Hermes 适配层：本 `SKILL.md` + `scripts/run_cli.py` + `binding-lock.json` + `plugin/`（本文件即 Hermes 侧）
+  - opencode 适配层：`opencode/` 目录（`opencode/SKILL.md` + `opencode/agents/harness-*.md`）
+- **后端绑定**：每个 Step 可绑定 CLI 或宿主内 subagent，绑定语义见 `shared/core-logic.md` §4；按步骤特性推荐见 `shared/binding-recommendation.md`。本 Hermes 侧沿用 `binding-lock.json` 作为唯一绑定来源（每步一个外部 CLI）；opencode 侧用 subagent + 可选 CLI 实现同样语义。
+- **合并说明**：旧的 `four-step-harness`（Hermes skills 内的简化旧版）已废弃，其内容并入本项目的 `shared/` + 适配层，不存在第二套逻辑。
+
+任何平台若发现共享逻辑有缺陷，修正必须在 `shared/core-logic.md`，并同步更新两侧适配层引用说明（如新增步骤、变更编号规则、改循环上限）。
 
 ## The 4-Step Method
 
@@ -718,6 +731,7 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.12 (2026-08-10): 新增跨平台架构：共享逻辑唯一源 `shared/core-logic.md` + 推荐表 `shared/binding-recommendation.md`；新增 `opencode/` 适配层（SKILL.md + harness-* subagents）；废弃旧 four-step-harness 并入本项目；14 步逻辑/编号/绑定/循环/基线/违规处理统一引用 shared。
 - v13.0.11 (2026-08-09): 新增子项并行执行能力（delegate_task 派发多子 Agent 同时跑各自 4 步法），显著加快拆分后的整体进度。
 - v13.0.10 (2026-08-09): 修复 harness-config.yaml steps 段硬编码 agent 绑定导致的跨实例兼容缺陷。移除 steps 段的 agent 字段，完全由 binding-lock.json 控制。根因：harness-config.yaml 和 binding-lock.json 同时定义 agent 绑定，load_config() 合并时 binding-lock 覆盖 harness-config，但如果两个 Hermes 实例的 binding-lock 版本不同（如一个 step3=mimo），会导致不可预期的 CLI 调用失败。
 - v13.0.9 (patch 1, 2026-08-09): 违规清单第 5 项加宽, 明确'为修正某 agent 而切换绑定'属于绕过型违规. 起因: doc-supported-clis Step3 (mimo) 虚构内容, 我错误用 --authorize-binding-change 临时切到 claude 修正. 教训: 内容质量问题应走 Step 2→3→4 循环, 不是切绑定.
