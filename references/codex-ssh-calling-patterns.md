@@ -6,7 +6,7 @@ Tested and validated in production 2026-07-11.
 - **Control machine**: 10.0.0.87 (周公瑾, Windows, bash/MSYS)
 - **Codex machine**: 10.0.0.50 (郭奉孝, Windows, PowerShell)
 - **Codex version**: 0.144.1, model: gpt-5.6-sol, auth: ChatGPT tokens
-- **CODEX_HOME**: `C:\Users\Administrator\.ccsc\codex-mimo`
+- **CODEX_HOME**: `C:\Users\Administrator\.ccsc\codex-mimo`（这是 Codex 自己的数据目录，`~/.codex` 的隔离副本；目录名里的 "mimo" 是历史会话的混淆命名，与 mimo CLI 无关——codex 和 mimo 是两个独立 CLI）
 
 ## Basic One-Liner
 

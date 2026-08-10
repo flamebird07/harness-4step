@@ -8,7 +8,7 @@
 | 后端标识 | 类型 | 命令/机制 | 免费 | 中文 | 适用步骤 | 备注 |
 |---------|------|-----------|------|------|---------|------|
 | `claude` | CLI | `claude -p` / Step3 带 `--dangerously-skip-permissions` | ❌ | ★★★★★ | 1/2/3/4 | 通用强，Step1/2 首选 |
-| `codex` | CLI | `codex exec --ephemeral --sandbox danger-full-access --json` | ❌ | ★★★★ | 1/2/4 | Step4 常用，跨模型族 |
+| `codex` | CLI | `codex exec --ephemeral --sandbox danger-full-access --json`（`CODEX_HOME=~/.ccsc/codex-mimo`） | ❌ | ★★★★ | 1/2/4 | Step4 常用，跨模型族；默认 `~/.codex` 可能失效，用隔离的 CODEX_HOME 更稳 |
 | `mimo` | CLI | `mimo run --print-logs -m xiaomi/mimo-v2.5-pro` | ✅ | ★★★★★ | 1/2/3 | 免费，Step3 省钱首选 |
 | `kimi` | CLI | `kimi -p` | 未知 | ★★★★★ | 1/2 | `--plan` 适合 Step2 |
 | `gemini` | CLI | `gemini "prompt"` | 部分 | ★★★★★ | 1/4 | 跨模型族 |
