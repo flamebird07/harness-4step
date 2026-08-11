@@ -1,1 +1,0 @@
-确认修复方案可行：app/queue/worker.py 中 _process_master 的 except 块删除 _fail_safely 调用改为直接进 Seedream fallback；_recover_generation 新增 allow_retry 参数（master场景传False）；_generate_master_seedream 兼容 RUNNING 状态转换；review 失败分支用最新 retry_count + _retry_or_finalize。请确认此方案能解决"Seedream母图被清空+任务卡住+重试计数错误消耗"问题，只回答确认/不确认+理由。

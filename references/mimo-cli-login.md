@@ -9,7 +9,7 @@ MiMo Code CLI (`mimo`) 提供两种登录方式：免费通道和付费（浏览
 `mimo` 安装在 npm 全局目录，**不在默认 PATH 中**。每次调用前必须：
 
 ```bash
-export PATH="$PATH:/c/Users/Administrator/AppData/Roaming/npm"
+export PATH="$PATH:$HOME/AppData/Roaming/npm"
 ```
 
 验证：

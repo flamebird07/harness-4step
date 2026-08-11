@@ -1,1 +1,0 @@
-确认：app/queue/worker.py 的 _recover_generation 第315行调用 self.recovery.recover() 时，RecoveryError 是否未捕获并向上传播，导致 _process_master 第544行的 Seedream fallback 被绕过？请只回答确认/不确认，并给出代码行号证据。

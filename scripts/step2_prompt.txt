@@ -1,9 +1,0 @@
-You are reviewing code changes. Read scripts/sync_credential_pool.py and design fixes for these 3 specific bugs:
-
-Bug A: In function update_runtime_main_model (around line 679), the line config['model'] = model replaces the entire model dict. This drops user fields like temperature. Fix: merge existing dict with new dict.
-
-Bug B: In the auto-switch block (around line 972), the code compares record.get('model','') against current_identity[2] which is lowercased. The record model is NOT lowercased, causing false positive switches. Fix: lowercase the record model.
-
-Bug C: In the auto-switch block (around line 1006), us(..., note='验证通过') overwrites any existing note. Fix: only set note when record has no existing note.
-
-Output: exact code patches for each bug. Read-only, no edits.

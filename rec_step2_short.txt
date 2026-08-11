@@ -1,1 +1,0 @@
-为 fashion-imagegen 修复 Codex 配额超限时 Seedream fallback 被绕过的问题。请在 app/queue/worker.py 的 _process_master 第539行 _recover_generation 调用处，用 try/except 捕获 (RuntimeError, RecoveryError)，except 中调用 _fail_safely 并设 recovered=None 以触发 fallback。确认此方案可行并输出确认。只出方案不改代码。

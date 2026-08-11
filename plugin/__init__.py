@@ -1,8 +1,9 @@
 """harness-4step — Harness 4-Step enforcement plugin (v3).
 
 Enforces real CLI execution via run_cli.py at the tool-call level:
-  1. When run_cli.py completes successfully → mark step_done for this session
-  2. When write_file/patch/skill_manage is invoked → block unless run_cli.py succeeded
+  1. When run_cli.py completes successfully → mark step_done for this session (ordering/logging only)
+  2. When write_file/patch/skill_manage is invoked → block unconditionally; direct tool
+     edits can never substitute for a Step 3 CLI execution (no step_done unlock)
 
 This replaces delegate_task-based marking (v2) with real CLI execution tracking.
 delegate_task is allowed but does NOT mark step_done — only run_cli.py does.
@@ -22,8 +23,7 @@ Exemptions (checked in order):
   1. Plugin disabled via config
   2. Tool not in target list (write_file, patch, skill_manage)
   3. No session identifier available → bypass (degraded mode)
-  4. run_cli.py already completed successfully (step_done)
-  5. Explicit exemption via config (exempt_tools, exempt_goal_patterns)
+  4. Explicit exemption via config (exempt_tools, exempt_goal_patterns)
 
 Memory management:
   - TTL: 30 minutes (configurable via config.ttl_minutes)
@@ -35,9 +35,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -50,8 +52,9 @@ _DEFAULT_TTL_MINUTES = 30
 _DEFAULT_MAX_SESSIONS = 200
 _DEFAULT_PRUNE_INTERVAL_SECONDS = 30
 
-# Tools that are blocked until Step 1 (delegate_task) is completed.
-# skill_manage is included because write_file/patch sub-actions modify code.
+# Tools that are always blocked: direct tool edits can never substitute for a
+# Step 3 CLI execution. skill_manage is included because write_file/patch
+# sub-actions modify code.
 _BLOCKED_TOOLS: Set[str] = {"write_file", "patch", "skill_manage"}
 
 def _is_run_cli_call(args: Any) -> bool:
@@ -59,15 +62,38 @@ def _is_run_cli_call(args: Any) -> bool:
     if not isinstance(args, dict):
         return False
     cmd = str(args.get("command", "") or "")
-    return "run_cli.py" in cmd and "--step" in cmd
+    if "run_cli.py" not in cmd:
+        return False
+    return bool(re.search(r"(?:^|\s)--step(?:\s|=)", cmd))
 
 
 def _is_direct_harness_cli_call(args: Any) -> bool:
-    """Reject direct Codex/Kimi/Claude calls that would bypass reporting and evidence."""
+    """Reject direct Codex/Claude/Kimi/Mimo CLI invocations that would bypass reporting and evidence."""
     if not isinstance(args, dict):
         return False
-    cmd = str(args.get("command", "") or "").lower()
-    return any(token in cmd for token in ("codex exec", "kimi -p", "claude -p"))
+    cmd = str(args.get("command", "") or "").strip()
+    if not cmd:
+        return False
+    lowered = cmd.lower()
+    # Known invocation forms (also catches calls after ; & && | or in compound commands).
+    forms = ("codex exec", "claude -p", "claude --dangerously", "kimi -p", "mimo run")
+    if any(f in lowered for f in forms):
+        return True
+    # First executable token (bare name, quoted path, or *.exe/*.cmd/*.bat) is a harness CLI.
+    token = cmd.lstrip(" \t&;|()").strip()
+    if not token:
+        return False
+    if token[0] in ('"', "'"):
+        quote = token[0]
+        end = token.find(quote, 1)
+        token = token[1:end] if end > 0 else token
+    else:
+        token = token.split(None, 1)[0]
+    base = os.path.basename(token).lower()
+    for ext in (".exe", ".cmd", ".bat"):
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+    return base in {"codex", "claude", "kimi", "mimo"}
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +112,10 @@ class SessionState:
     next_step: str = "step1"
 
 # Module-level state store. Keyed by session_id (or task_id fallback).
+# Guarded by _state_lock: the background prune thread and hook callbacks run
+# concurrently, so all dict-level access must hold the lock.
 _session_states: Dict[str, SessionState] = {}
+_state_lock = threading.Lock()
 
 # Configuration cache (loaded from plugin.yaml at init time)
 _config: Dict[str, Any] = {}
@@ -97,12 +126,32 @@ _last_prune_time: float = 0.0
 
 
 def _load_config(ctx: Any) -> Dict[str, Any]:
-    """Load plugin configuration from the plugin context."""
+    """Load plugin configuration: plugin.yaml first, then env defaults.
+
+    Priority: plugin.yaml (ships with the plugin, stable in repo and installed
+    layout) > Hermes manifest config (best-effort, not a public API) > env vars.
+    """
     global _config, _config_loaded
     if _config_loaded:
         return _config
+    # 1) plugin.yaml next to this module
     try:
-        # Try to get config from the plugin context
+        import yaml as _yaml
+    except ImportError:
+        _yaml = None
+    if _yaml is not None:
+        try:
+            yaml_path = Path(__file__).with_name("plugin.yaml")
+            if yaml_path.is_file():
+                data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+                cfg = data.get("config") or {}
+                _config.update(cfg)
+                _config_loaded = True
+                return _config
+        except Exception:
+            logger.debug("harness-4step: plugin.yaml config parse failed", exc_info=True)
+    # 2) Hermes manifest (best-effort private API, kept as fallback only)
+    try:
         if hasattr(ctx, '_manager') and hasattr(ctx._manager, '_manifest'):
             manifest = ctx._manager._manifest
             if hasattr(manifest, 'config') and manifest.config:
@@ -110,8 +159,8 @@ def _load_config(ctx: Any) -> Dict[str, Any]:
                 _config_loaded = True
                 return _config
     except Exception:
-        pass
-    # Fallback to defaults + env vars
+        logger.debug("harness-4step: manifest config unavailable", exc_info=True)
+    # 3) Fallback to defaults + env vars
     _config.update({
         "enabled": os.environ.get("FOUR_STEP_ENFORCER_ENABLED", "1").lower() in {"1", "true", "yes", "on"},
         "ttl_minutes": int(os.environ.get("FOUR_STEP_ENFORCER_TTL", str(_DEFAULT_TTL_MINUTES))),
@@ -177,27 +226,28 @@ def _resolve_session_key(
 
 def _prune_states() -> None:
     """Remove expired entries and enforce max session limit."""
-    now = time.time()
-    ttl = _get_ttl_seconds()
-    max_sessions = _get_max_sessions()
+    with _state_lock:
+        now = time.time()
+        ttl = _get_ttl_seconds()
+        max_sessions = _get_max_sessions()
 
-    # Remove expired entries
-    expired = [
-        key for key, state in _session_states.items()
-        if now - state.last_activity > ttl
-    ]
-    for key in expired:
-        del _session_states[key]
-
-    # Enforce max limit (remove oldest first)
-    if len(_session_states) > max_sessions:
-        sorted_keys = sorted(
-            _session_states.keys(),
-            key=lambda k: _session_states[k].last_activity
-        )
-        to_remove = sorted_keys[:len(sorted_keys) - max_sessions]
-        for key in to_remove:
+        # Remove expired entries
+        expired = [
+            key for key, state in _session_states.items()
+            if now - state.last_activity > ttl
+        ]
+        for key in expired:
             del _session_states[key]
+
+        # Enforce max limit (remove oldest first)
+        if len(_session_states) > max_sessions:
+            sorted_keys = sorted(
+                _session_states.keys(),
+                key=lambda k: _session_states[k].last_activity
+            )
+            to_remove = sorted_keys[:len(sorted_keys) - max_sessions]
+            for key in to_remove:
+                del _session_states[key]
 
 
 def _maybe_prune() -> None:
@@ -230,10 +280,10 @@ def _get_or_create_state(session_key: str) -> SessionState:
     """Get or create state for a session, with periodic cleanup."""
     _maybe_prune()
 
-    if session_key not in _session_states:
-        _session_states[session_key] = SessionState()
-
-    state = _session_states[session_key]
+    with _state_lock:
+        if session_key not in _session_states:
+            _session_states[session_key] = SessionState()
+        state = _session_states[session_key]
     state.last_activity = time.time()
     return state
 
@@ -249,15 +299,11 @@ def _is_exempt(
 ) -> bool:
     """Check if this tool call is exempt from enforcement.
 
-    Exemptions (in priority order):
-    1. Tool not in blocked set → exempt (not our concern)
-    2. User-level config exemptions (exempt_tools, exempt_goal_patterns)
+    Only called when tool_name is in _BLOCKED_TOOLS (see _on_pre_tool_call);
+    tool-not-in-blocked-set is handled by the caller. Exemptions:
+    1. User-level config exemptions (exempt_tools, exempt_goal_patterns)
     """
-    # 1. Tool not in blocked set
-    if tool_name not in _BLOCKED_TOOLS:
-        return True
-
-    # 2. Config-level exemptions
+    # 1. Config-level exemptions
     if tool_name in _get_exempt_tools():
         return True
 
@@ -294,7 +340,8 @@ def _on_pre_tool_call(
     3. If no session identifier → bypass (no cross-session pollution)
     4. Get/create session state
     5. If tool is delegate_task → allow (success tracked in post_hook)
-    6. If tool is write_file/patch → check Step 1 done, block or allow
+    6. If tool is write_file/patch/skill_manage → block (direct edits never
+       substitute for a Step 3 CLI execution; there is no step_done unlock)
     7. All other tools → allow
     """
     if not _is_enabled():
@@ -401,7 +448,7 @@ def _on_post_tool_call(
         state = _get_or_create_state(session_key)
         cmd = str((args or {}).get("command", "") or "")
         for step_name in ["step1", "step2", "step3", "step4"]:
-            if f"--step {step_name}" in cmd or f"--step={step_name}" in cmd:
+            if re.search(r"(?:^|\s)--step(?:\s|=)" + step_name + r"(?:\s|$)", cmd):
                 if step_name != state.next_step:
                     logger.warning("harness-4step: ignored out-of-order %s; expected %s", step_name, state.next_step)
                     break
@@ -470,8 +517,9 @@ def _on_session_end(
     session_key = _resolve_session_key(session_id, "", None)
     if session_key is None:
         return
-    if session_key in _session_states:
-        state = _session_states.pop(session_key)
+    with _state_lock:
+        state = _session_states.pop(session_key, None)
+    if state is not None:
         logger.debug(
             "harness-4step: session ended: %s "
             "(delegates=%d, blocks=%d)",

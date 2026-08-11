@@ -93,8 +93,10 @@ class TodoQueueTests(unittest.TestCase):
             todo_queue.record_step("test-task", "item", "step1", False, "failure.json")
         todo_queue.recover("test-task", "item")
         self.assertEqual(todo_queue.summary("test-task")["counts"]["pending"], 1)
-        with self.assertRaisesRegex(ValueError, "requires split"):
-            todo_queue.next_item("test-task")
+        # next_item skips the split-required item instead of raising, so other
+        # claimable items are not blocked (parallel dispatch); the item stays pending.
+        self.assertIsNone(todo_queue.next_item("test-task"))
+        self.assertEqual(todo_queue.summary("test-task")["counts"]["pending"], 1)
 
 
 if __name__ == "__main__":

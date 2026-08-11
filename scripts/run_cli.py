@@ -40,8 +40,10 @@ STEP_PROMPT_PREFIXES = {
 }
 
 
-def apply_step_prompt_prefix(step: str, prompt: str) -> str:
-    prefix = STEP_PROMPT_PREFIXES.get(step)
+def apply_step_prompt_prefix(step: str, prompt: str, agent: str = "") -> str:
+    """Apply protection prefixes: agent-specific first (e.g. mimo anti-fabrication),
+    then step-specific (read-only / no self-testing)."""
+    prefix = STEP_PROMPT_PREFIXES.get(agent, "") + STEP_PROMPT_PREFIXES.get(step, "")
     return f"{prefix}{prompt}" if prefix else prompt
 
 
@@ -79,6 +81,7 @@ AGENT_CLI = {
                       "--sandbox", "danger-full-access", "--json"],
         "output_parse": "json_lines",
         "step3_remove_args": ["--ephemeral"],
+        "use_stdin": True,
     },
     "mimo": {
         "executable": "mimo",
@@ -100,6 +103,7 @@ AGENT_CLI = {
         "output_parse": "plain",
         "step3_remove_args": ["-p"],
         "step3_extra_args": ["--dangerously-skip-permissions"],
+        "use_stdin": True,
     },
 }
 
@@ -283,7 +287,6 @@ class CliRunResult:
 
 def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             timeout_seconds: int | None = None) -> CliRunResult:
-    prompt = apply_step_prompt_prefix(step, prompt)
     config = load_config()
     cfg = config.step(step)
     agent = cfg.get("agent")
@@ -292,6 +295,7 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
             stderr_path="", evidence_path="", output_sha256="", success=False,
             failure_reason=f"No agent bound for {step}. Check binding-lock.json.")
+    prompt = apply_step_prompt_prefix(step, prompt, agent)
     exe = config.resolve_executable(agent)
     if not exe:
         return CliRunResult(step=step, agent=agent, command=[agent], started_at="",
@@ -325,7 +329,12 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
         # On Windows, npm-installed CLIs are commonly .cmd/.bat wrappers.
         # They must be launched through cmd.exe rather than CreateProcess.
         use_shell = sys.platform == "win32" and Path(exe).suffix.lower() in {".cmd", ".bat"}
-        r = subprocess.run(cmd, cwd=str(workspace),
+        env = dict(os.environ)
+        if agent == "codex" and "CODEX_HOME" not in env:
+            # Isolated CODEX_HOME per shared/binding-recommendation.md
+            # (the default ~/.codex may be stale/unusable).
+            env["CODEX_HOME"] = str(Path.home() / ".ccsc" / "codex-mimo")
+        r = subprocess.run(cmd, cwd=str(workspace), env=env,
             input=prompt if use_stdin else None,
             stdin=None if use_stdin else subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -609,7 +618,13 @@ if __name__ == "__main__":
         ev = Path.home()/".hermes"/"harness-workspace"/a.task_id/a.step/"evidence.json"
         ok, msg = verify_evidence(ev)
         print(json.dumps({"success":ok,"message":msg})); sys.exit(0 if ok else 1)
-    prompt = Path(a.prompt_file).read_text(encoding="utf-8") if a.prompt_file else (a.prompt or "")
+    if a.prompt_file:
+        prompt_file = Path(a.prompt_file)
+        if not prompt_file.is_file():
+            print(f"Error: prompt file not found: {prompt_file}", file=sys.stderr); sys.exit(1)
+        prompt = prompt_file.read_text(encoding="utf-8")
+    else:
+        prompt = a.prompt or ""
     if not prompt: print("Need --prompt or --prompt-file", file=sys.stderr); sys.exit(1)
     try:
         todo_begin_step(a.task_id, a.todo_id, a.step)

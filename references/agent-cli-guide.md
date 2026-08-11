@@ -74,10 +74,12 @@ Step 3: MiMo Code（免费+够用）
 Step 4: Gemini CLI（不同模型族）
 ```
 
-### 均衡模式（当前方案）
-```
+### 均衡模式
+
 Step 1/2/4: Codex CLI（已有订阅）
-Step 3: Hermes patch
+Step 3: MiMo Code（免费）
+
+> 注：v13 起实际绑定由各机器 binding-lock.json 决定（"当前方案"以绑定锁为准）；Step 3 不能用 Hermes patch/write_file——会被 four-step-enforcer 插件无条件拦截。
 ```
 
 ### 独立复审模式（推荐搭配）

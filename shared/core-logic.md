@@ -46,7 +46,7 @@
 
 - 触发：Step 4 评级 `需调整` 或新阻塞问题
 - 回退点：Step 2，**仅针对未通过的编号 + 新阻塞项**，禁止范围蔓延
-- 上限：默认 3 次（Hermes 版可配到 10），超限停止并向用户报告全部未解决问题
+- 上限：默认 3 次，可配置到 10，超限停止并向用户报告全部未解决问题
 
 ## 7. 执行前基线（Step 3 前置）
 
@@ -74,6 +74,6 @@
 |------|--------------|-----------------|
 | 执行后端 | `run_cli.py` + `binding-lock.json` | `task` 调度 subagent + bash 调 CLI |
 | 配置 | `~/.hermes/binding-lock.json` + `harness-config.yaml` | `opencode/SKILL.md` + subagent 文件 |
-| 反绕过 | `plugin/four-step-enforcer` | subagent `permission: edit: deny`（系统级） |
+| 反绕过 | `plugin/`（four-step-enforcer 插件） | subagent `permission: edit: deny`（系统级） |
 
 任何平台**不得在本文件之外**复制逻辑实现；适配层只实现调用，不重新发明逻辑。

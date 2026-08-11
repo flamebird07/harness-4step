@@ -4,3 +4,7 @@ __pycache__/
 binding-lock.json
 harness-config.yaml
 todo.json
+.harness/
+baseline.diff
+violations.log
+backup/

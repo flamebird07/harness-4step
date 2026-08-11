@@ -407,8 +407,10 @@ def test_steps_must_be_ordered_and_never_unlock_direct_edits(ctx):
 def test_direct_cli_bypass_is_blocked(ctx):
     print("Test 16: direct CLI bypass is blocked...")
     hook = ctx.hooks["pre_tool_call"][0]
-    result = hook(tool_name="terminal", args=make_args(command="codex exec --ephemeral review"), session_id="cli-bypass")
-    assert result is not None and result["action"] == "block"
+    for cmd in ("codex exec --ephemeral review", "claude --dangerously-skip-permissions ...",
+                "mimo run -m xiaomi/mimo-v2.5-pro", "kimi -p 'prompt'", "codex"):
+        result = hook(tool_name="terminal", args=make_args(command=cmd), session_id="cli-bypass")
+        assert result is not None and result["action"] == "block", f"should block: {cmd}"
     allowed = hook(tool_name="terminal", args=make_args(command="python scripts/run_cli.py --step step1"), session_id="cli-bypass")
     assert allowed is None
     print("  ✅ PASS: direct CLI is blocked; runner is allowed")
@@ -478,7 +480,7 @@ def main():
     print("  - run_cli.py marks step_done (only on success)")
     print("  - delegate_task does NOT mark step_done (use run_cli.py instead)")
     print("  - Empty status or error does NOT mark step_done")
-    print("  - write_file/patch blocked after delegate_task (only run_cli.py unlocks)")
+    print("  - write_file/patch/skill_manage always blocked (no step_done unlock for direct edits)")
     print("  - Sessions are isolated")
     print("  - session_id=None falls back to task_id")
     print("  - Other tools unaffected")

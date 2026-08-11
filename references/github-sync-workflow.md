@@ -1,46 +1,32 @@
 # GitHub Sync Workflow for harness-4step
 
-When the user asks to "upload the latest version to GitHub", this is the workflow for syncing the local skill directory to the GitHub repo.
+When the user asks to "upload the latest version to GitHub", this is the workflow for syncing the local skill files to the GitHub repo.
+
+> 安全约定：本仓库是公开仓库，**不得**在本文档或任何仓库文件中写入 token、凭据、内网 IP 或本机绝对路径。认证凭据只存在于本机 git 配置中（如 `~/.gitconfig` 的 URL rewrite 或 credential helper），仓库内不得记录凭据的存放位置或提取方法。
 
 ## Repository
 
 - **Repo**: `flamebird07/harness-4step`
 - **Default branch**: `master`
 - **GitHub user**: `flamebird07`
-- **Auth**: Token stored in `~/.gitconfig` URL rewrite (masked as `***`)
-
-## Token Extraction (Windows / MSYS bash)
-
-The gitconfig URL rewrite displays the token as `***`. `git credential fill` hangs when no credential helper is configured. Extract via Python raw bytes:
-
-```bash
-export GITHUB_TOKEN=$(python3 -c "
-import re
-with open('C:/Users/Administrator/.gitconfig', 'rb') as f:
-    content = f.read()
-m = re.search(rb'url \"https://([^@]+)@github\.com/\"', content)
-print(m.group(1).decode() if m else '')
-")
-```
 
 ## Sync Steps
 
 1. **Clone the repo** (if not already cloned):
    ```bash
-   cd /c/Users/Administrator/AppData/Local/hermes/repos
-   git clone https://github.com/flamebird07/harness-4step.git harness-4step
+   git clone https://github.com/flamebird07/harness-4step.git
    ```
 
 2. **Compare local skill files vs repo files**:
-   - Local skill: `~/AppData/Local/hermes/skills/harness-4step/`
-   - Local plugin: `~/AppData/Local/hermes/plugins/four-step-enforcer/`
-   - Git repo: `~/AppData/Local/hermes/repos/harness-4step/`
+   - Local skill: `~/.hermes/skills/harness-4step/`（或平台对应安装目录）
+   - Local plugin: `~/.hermes/plugins/harness-4step/`
+   - Git repo: 本机 clone 目录
 
 3. **Copy updated files** into the repo:
    ```bash
-   REPO=/c/Users/Administrator/AppData/Local/hermes/repos/harness-4step
-   LOCAL_SKILL=/c/Users/Administrator/AppData/Local/hermes/skills/harness-4step
-   LOCAL_PLUGIN=/c/Users/Administrator/AppData/Local/hermes/plugins/four-step-enforcer
+   REPO=<本机 clone 目录>
+   LOCAL_SKILL=~/.hermes/skills/harness-4step
+   LOCAL_PLUGIN=~/.hermes/plugins/harness-4step
 
    cp "$LOCAL_SKILL/SKILL.md" "$REPO/SKILL.md"
    cp "$LOCAL_SKILL/references/"*.md "$REPO/references/"
@@ -50,7 +36,7 @@ print(m.group(1).decode() if m else '')
 
 4. **Update README.md** to reflect the new version number and file structure.
 
-5. **Commit and push**:
+5. **Commit and push**（认证由本机 git 凭据配置提供，无需手动提取 token）:
    ```bash
    cd "$REPO"
    git add -A
@@ -58,26 +44,18 @@ print(m.group(1).decode() if m else '')
    git push origin master
    ```
 
-6. **Verify** via GitHub API:
-   ```bash
-   curl -s -H "Authorization: token $GITHUB_TOKEN" \
-     "https://api.github.com/repos/flamebird07/harness-4step/commits?per_page=1" | \
-     python3 -c "import sys,json; c=json.load(sys.stdin)[0]; print(c['sha'][:8], c['commit']['message'][:80])"
-   ```
-
 ## File Mapping
 
-| Local skill file | Repo location |
-|-----------------|---------------|
+| Local file | Repo location |
+|------------|---------------|
 | `skills/harness-4step/SKILL.md` | `SKILL.md` |
 | `skills/harness-4step/references/*.md` | `references/*.md` |
 | `skills/harness-4step/scripts/*` | `scripts/*` |
-| `plugins/four-step-enforcer/__init__.py` | `plugin/__init__.py` |
-| `plugins/four-step-enforcer/plugin.yaml` | `plugin/plugin.yaml` |
-| `plugins/four-step-enforcer/test_four_step_enforcer.py` | `plugin/test_four_step_enforcer.py` |
+| `plugins/harness-4step/__init__.py` | `plugin/__init__.py` |
+| `plugins/harness-4step/plugin.yaml` | `plugin/plugin.yaml` |
+| `plugins/harness-4step/test_four_step_enforcer.py` | `plugin/test_four_step_enforcer.py` |
 
 ## Notes
 
-- GitHub is directly accessible from 10.0.0.87 without proxy (mihomo not required for GitHub API/git operations)
-- The repo has both `master` and `main` branches — push to `master` (the default)
-- MSYS `/tmp` paths don't persist between terminal calls on Windows — use Windows-native paths or in-memory Python for temp data
+- 上传前运行 `git status`，确认 `.harness/`、`baseline.diff`、`violations.log`、`backup/` 等本地产物未被加入（已在 .gitignore）。
+- 推送前 grep 确认 `scripts/`、`opencode/`、`references/` 中没有本机绝对路径或内网 IP。

@@ -35,10 +35,26 @@ harness-4step/            # GitHub 仓库（同一仓库）
    ~/.config/opencode/agent/harness-verifier.md          ← 复制自 opencode/agents/
    ```
 
-3. （可选）把 `shared/` 放到项目可读位置：推荐用 opencode 的
-   `references` 或直接复制 `shared/core-logic.md` 到 skill 目录旁，让 subagent 能读取。
+2b. 复制 step4 脚本到 skill 目录（SKILL.md 的 step4 流程依赖，不可省略）：
+
+   ```
+   ~/.config/opencode/skill/four-step-harness/scripts/   ← 复制自 opencode/scripts/（run_codex_step4.ps1、run_mimo_step4.ps1、run_claude_step12.ps1）
+   ```
+   复制后 SKILL.md 中的调用路径 `<skill 目录>\scripts\run_codex_step4.ps1` 即可用。
+
+3. （可选）让 subagent 能读取共享逻辑（只引用不复制）：**不要复制 `shared/` 到别处**——
+   `shared/` 是唯一逻辑源（shared/core-logic.md §10），复制会造成副本与源头分叉。读取方式二选一：
+   - **方式 A（推荐）**：用 opencode 打开**仓库根目录**作为项目来运行四步法。agents 定义在全局
+     `~/.config/opencode/agent/`，但其运行时工作目录 = 你打开的项目目录；cwd=仓库根 时，各 agent
+     用 read 工具按相对路径 `shared/core-logic.md` 读取（每个 agent 正文已含"运行时读取共享逻辑"前置动作）。
+   - **方式 B（仓库外运行）**：设置环境变量 `HARNESS_SHARED_DIR=<仓库绝对路径>/shared`，各 agent
+     读取 `$HARNESS_SHARED_DIR/core-logic.md`。该变量只是指向仓库内 shared/ 的引用路径，不产生副本。
 
 4. 重启 opencode。
+
+> 注意：四步法必须在仓库根目录作为 opencode 项目打开（方式 A），或设置 `HARNESS_SHARED_DIR`（方式 B），
+> agents 才能在运行时通过 read 工具拿到 `shared/core-logic.md` 内容。两者都没有时，agent 会提示调度者，
+> 不会凭空臆造共享逻辑。
 
 ## 验证
 

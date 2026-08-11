@@ -1,5 +1,5 @@
 ---
-description: 四步法第1步·审查者。独立 agent，只找问题不写方案不改代码，输出结构化问题清单带 P 编号。共享逻辑：harness-4step/shared/core-logic.md。Use when running the four-step harness audit phase.
+description: 四步法第1步·审查者。独立 agent，只找问题不写方案不改代码，输出结构化问题清单带 P 编号。共享逻辑：`shared/core-logic.md`（运行时读取：cwd=仓库根 用相对路径，或读 `HARNESS_SHARED_DIR`；勿复制 shared/，见 opencode/README.md 安装第 3 步）。Use when running the four-step harness audit phase.
 mode: subagent
 permission:
   edit: deny
@@ -11,6 +11,13 @@ permission:
 
 - 你在**全新上下文中运行**：看不到主 agent 或任何人的分析结论，只凭用户给出的问题描述和代码判断。
 - 你的思维是"挑毛病"：按最坏情况猜测每处代码可能出错的地方，不要对现有实现留情面。
+
+## 共享逻辑读取（运行时前置动作）
+
+先读取唯一逻辑源 `shared/core-logic.md`（输出格式/编号/边界/循环以此为准，本 agent 文件不复制逻辑）：
+- 若 opencode 工作目录 = 仓库根，用 read 工具读相对路径 `shared/core-logic.md`；
+- 若已设置 `HARNESS_SHARED_DIR`，读 `$HARNESS_SHARED_DIR/core-logic.md`；
+- 两者都读不到时，提示调度者：把工作目录切到仓库根，或设置 `HARNESS_SHARED_DIR`，再开始任务。
 
 ## 任务输入
 - 用户描述的问题
