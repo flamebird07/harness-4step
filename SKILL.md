@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode，共享逻辑在 shared/ 目录。"
-version: 13.0.12
+version: 13.0.13
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.12 — Locked CLI Binding via binding-lock.json + Enforced Queue)
+# Harness 4-Step Method (v13.0.13 — Locked CLI Binding via binding-lock.json + Enforced Queue)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -548,7 +548,7 @@ Failure summary:
 - Retries used: <count by step>
 - Unresolved blocker: <none or description>
 
-Self-audit (summary — see full 14-row audit above):
+Self-audit (summary — see full 15-row audit above):
 - Meaningful output present: <pass/fail>
 - Exit code accepted: <pass/fail>
 - Claims backed by evidence: <pass/fail>
@@ -728,11 +728,10 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.13 (2026-08-13): 日常自审四连修：① 汇报模板 '14-row' → '15-row'（Enhanced Self-Audit 实际 15 行，补齐历史遗漏）；② 合并 v13.0.9 版本历史条目到 v13.0.10（重复版本号，harness-config steps 段去硬编码 agent 根因并入详表）；③ binding-lock.json authorization_log 去重（删 08-10T18:05:00 step4 mimo 重复条目）并按 'at' 升序重排（13 条）；④ 项目控制台新增「当前生效绑定」小节（step1-3=claude，step4=codex）。
 - v13.0.12 (2026-08-10): 新增跨平台架构：共享逻辑唯一源 `shared/core-logic.md` + 推荐表 `shared/binding-recommendation.md`；新增 `opencode/` 适配层（SKILL.md + harness-* subagents）；废弃旧 four-step-harness 并入本项目；14 步逻辑/编号/绑定/循环/基线/违规处理统一引用 shared。
 - v13.0.11 (2026-08-09): 新增子项并行执行能力（delegate_task 派发多子 Agent 同时跑各自 4 步法），显著加快拆分后的整体进度。
 - v13.0.10 (2026-08-09): 修复 harness-config.yaml steps 段硬编码 agent 绑定导致的跨实例兼容缺陷。移除 steps 段的 agent 字段，完全由 binding-lock.json 控制。根因：harness-config.yaml 和 binding-lock.json 同时定义 agent 绑定，load_config() 合并时 binding-lock 覆盖 harness-config，但如果两个 Hermes 实例的 binding-lock 版本不同（如一个 step3=mimo），会导致不可预期的 CLI 调用失败。
-- v13.0.9 (patch 1, 2026-08-09): 违规清单第 5 项加宽, 明确'为修正某 agent 而切换绑定'属于绕过型违规. 起因: doc-supported-clis Step3 (mimo) 虚构内容, 我错误用 --authorize-binding-change 临时切到 claude 修正. 教训: 内容质量问题应走 Step 2→3→4 循环, 不是切绑定.
-- v13.0.9 (2026-08-09):
   - Step 3 绑定 claude → mimo
   - Step 4 绑定 kimi → codex (Kimi 403 用量耗尽后正式切换)
   - DEFAULT_CONFIG 不再含 agent, binding-lock.json 是唯一绑定来源 (隐私解耦, 适配 GitHub 推送)
@@ -745,6 +744,7 @@ When a loop returns to Step 2 after Step 4 review:
   - fix-false-unavailable: tk() 三态请求体 + saw_transient + S_T 暂不可用
   - fix-sync-status-wrong: __RECORD__ status 反映真实状态 + 新增 --show-feishu-status 只读命令
   - show_feishu_status: 新增只读命令, 独立查飞书真实状态
+- v13.0.9 (patch 1, 2026-08-09): 违规清单第 5 项加宽, 明确'为修正某 agent 而切换绑定'属于绕过型违规. 起因: doc-supported-clis Step3 (mimo) 虚构内容, 我错误用 --authorize-binding-change 临时切到 claude 修正. 教训: 内容质量问题应走 Step 2→3→4 循环, 不是切绑定.
 - v13.0.8 (2026-08-09): CLI 绑定 relock — Step 1 绑定 mimo → codex，Step 4 绑定 mimo → kimi；锁到的绑定文本改为 Codex/Claude/Claude/Kimi；Step 1/2 超时标题拆分为 Step 1 Codex / Step 2 Claude，Step 3 超时标题 Codex → Claude；汇报模板 Step 2/3 Codex → Claude；循环终止条件 MiMo → Kimi。版本号 13.0.7 → 13.0.8。
 - v13.0.7 (2026-08-09): 新增「跨session上下文断裂/Windows命令行参数截断/Step3必须产生diff」三坑 Pitfall 章节；版本号 13.0.6 → 13.0.7。
 - v13.0.6 (2026-08-05): 修复 run_cli.py 中 Claude CLI 的 `--dangerously-skip-permissions` 对所有步骤生效的违规：`args_extra` 重命名为 `step3_extra_args`，仅在 Step 3 时添加。Step 1/2 为只读步骤，不应有文件修改权限。版本号 13.0.5 → 13.0.6。
