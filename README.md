@@ -1,13 +1,13 @@
 # 4步法强制执行系统 (Harness 4-Step Method)
 
-> **v13.0.15** — 绑定锁 + 原子队列 + 递归拆分；每步 CLI 绑定由 binding-lock.json 决定（Hermes 与 opencode 各自持久化）。单一项目兼容 Hermes/opencode，共享逻辑在 `shared/`。
+> **v13.0.16** — 绑定锁 + 原子队列 + 递归拆分；每步 CLI 绑定由 binding-lock.json 决定（Hermes 与 opencode 各自持久化）。单一项目兼容 Hermes/opencode，共享逻辑在 `shared/`。
 
 ## 系统组成
 
 | 组件 | 作用 |
 |------|------|
 | shared/ | **唯一逻辑源**：core-logic.md（四步法逻辑）+ binding-recommendation.md（推荐表） |
-| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.15） |
+| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.16） |
 | opencode/ | opencode 适配层：SKILL.md + 4 个 harness-* subagents + README |
 | plugin/ | harness-4step 技术强制执行插件 |
 | references/ | 参考文档（CLI 语法、故障诊断、会话取证） |
@@ -78,6 +78,7 @@ cp -r plugin ~/.hermes/plugins/harness-4step
 
 ## 版本历史
 
+- v13.0.16 (2026-08-13): opencode 融合后加固：run_step.ps1 claude 分支 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi step4 回退 300→180；opencode-sub 改权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系" + 调度表只读限定；verifier 兜底措辞澄清。版本号 13.0.15 → 13.0.16。
 - v13.0.15 (2026-08-13): opencode 适配层绑定 fail-closed 加固：manage_binding.ps1 / run_step.ps1 受支持 agent 统一为 claude/codex/mimo/kimi/opencode-sub（去 gemini）；run_step.ps1 分派前校验 schema/locked/完整绑定/受支持 agent/step3≠step4 模型族；manage_binding.ps1 补 step1/2 受支持校验；run_codex_step4.ps1 用 -C 传 WorkspaceDir 给 codex exec；kimi 文档对齐（-p 位置参数 + 8191 截断）；README 安装清单补 run_step.ps1 / run_kimi_step4.ps1。版本号 13.0.14 → 13.0.15。
 - v13.0.14 (2026-08-13): opencode 编排动态分派：新增 run_step.ps1 统一入口（读 binding-lock.json 分派到 claude/codex/mimo/kimi，opencode-sub 输出信号改走 subagent）；新增 run_kimi_step4.ps1；step4 只读前缀裁决为只读核对；run_claude_step12.ps1 修复 stdin UTF-8 + --add-dir。版本号 13.0.13 → 13.0.14。
 - v13.0.13 (2026-08-13): opencode 适配层绑定升级：新增 opencode/binding-lock.json + manage_binding.ps1（显式授权/校验）；step1/2/3 默认绑定 Claude Code CLI（用户显式授权）、step4=codex 保持不同模型族；mimo 脚本 -f 文件模式 + 前缀；三个 ps1 统一超时部分输出与失败信号。版本号 13.0.12 → 13.0.13。

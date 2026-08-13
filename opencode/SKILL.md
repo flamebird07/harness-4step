@@ -1,7 +1,7 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.15
+version: 13.0.16
 ---
 
 # 四步法 Harness（opencode 适配层）
@@ -27,7 +27,7 @@ version: 13.0.15
 - step2 = claude CLI（`run_claude_step12.ps1 -Step step2`，只读）
 - step3 = claude CLI（`run_claude_step12.ps1 -Step step3`，写文件，带 `--dangerously-skip-permissions`）
 - step4 = codex CLI（外部独立模型族，`run_codex_step4.ps1`）
-- step4 备用：mimo CLI（`run_mimo_step4.ps1`），仅当 codex 认证失效且用户显式授权时切换，经 `manage_binding.ps1 -AuthorizeStep step4 -Agent mimo` 记录；`harness-verifier` subagent 兜底路径已废弃（双兜底冲突，见 agents/harness-verifier.md）
+- step4 备用：mimo CLI（`run_mimo_step4.ps1`），仅当 codex 认证失效且用户显式授权时切换，经 `manage_binding.ps1 -AuthorizeStep step4 -Agent mimo` 记录；`harness-verifier` 作为 *CLI 备用*的兜底路径已废弃（双兜底冲突，见 agents/harness-verifier.md）；但 `opencode-sub` 绑定分派到 `harness-verifier` 的路径仍受支持（经 run_step.ps1 输出 BINDING=opencode-sub 后由主 agent 调度）
 
 **核心约束（不可违反，`manage_binding.ps1 -Check` 强制校验）**：Step 4 必须与 Step 3 不同模型族（当前 step3=claude、step4=codex，不同族；任何授权变更写入前立即校验，不满足则拒绝写入）。
 
@@ -114,7 +114,7 @@ version: 13.0.15
 
 同一可写工作包仍必须走下面的严格四步闭环。只有文件范围、验收条件和依赖都不重叠的工作包才可并行实施；多个执行 agent 禁止修改同一文件或同一逻辑区域。完整的路由表和安装方式见 `opencode/DYNAMIC-DELEGATION.md`。
 
-每步统一经 `opencode/scripts/run_step.ps1 -Step step<N> -PromptFile <file> -WorkspaceDir <根> -OutDir <dir>` 分派：脚本读 `binding-lock.json` 取该步绑定，按绑定调对应 runner（claude/codex/mimo/kimi）。若脚本输出 `BINDING=opencode-sub`，主 agent 改用 Task 工具调度对应 subagent（step1→`harness-auditor`、step2→`harness-planner`、step3→`harness-implementer`、step4→`harness-verifier`）；其余绑定由脚本直调 CLI runner。
+每步统一经 `opencode/scripts/run_step.ps1 -Step step<N> -PromptFile <file> -WorkspaceDir <根> -OutDir <dir>` 分派：脚本读 `binding-lock.json` 取该步绑定，按绑定调对应 runner（claude/codex/mimo/kimi）。若脚本输出 `BINDING=opencode-sub` 且 `EXIT_CODE=99`，主 agent 必须改用 Task 工具调度对应 subagent（按 `SUBAGENT` 字段：step1→`harness-auditor`、step2→`harness-planner`、step3→`harness-implementer`、step4→`harness-verifier`），未消费该信号视为本步未完成；其余绑定由脚本直调 CLI runner。
 
 1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置；先跑 `opencode/scripts/manage_binding.ps1 -Check` 校验绑定（lock 存在且 locked、bindings 恰好 step1..step4、step4 与 step3 不同模型族），校验失败即停止并向用户报告，不得继续后续步骤。
 2. **Step 1** prompt（问题+文件路径）写入 `.harness/<task>/step1-prompt.txt` → 调 `run_step.ps1 -Step step1` → 把分派产物（CLI runner 为 `step1/step1-output.md`；subagent 为 Task 返回）落为 `step1-problems.md`（P 编号）。零问题则终止报告。
@@ -139,6 +139,7 @@ version: 13.0.15
 
 ## 版本历史
 
+- v13.0.16 (2026-08-13): 融合后加固——run_step.ps1 claude 分支 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi step4 回退 300→180；opencode-sub 改权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系" + 调度表只读限定；verifier 兜底措辞澄清。版本号 13.0.15 → 13.0.16。
 - v13.0.15 (2026-08-13): 绑定 fail-closed 加固——manage_binding.ps1 / run_step.ps1 受支持 agent 统一为 claude/codex/mimo/kimi/opencode-sub（去 gemini）；run_step.ps1 分派前校验 schema/locked/完整绑定/受支持 agent/step3≠step4 模型族；manage_binding.ps1 补 step1/2 受支持校验；run_codex_step4.ps1 用 `-C` 传 WorkspaceDir 给 codex exec；kimi 文档对齐（-p 位置参数 + 8191 截断）；README 安装清单补 run_step.ps1 / run_kimi_step4.ps1。版本号 13.0.14 → 13.0.15。
 - v13.0.14 (2026-08-13): 编排动态分派——新增统一入口 `opencode/scripts/run_step.ps1 -Step step1..4`，读 binding-lock.json 按绑定分派到对应 runner，opencode-sub 绑定输出 `BINDING=opencode-sub` 信号改走对应 subagent；新增 `run_kimi_step4.ps1`（kimi 用 `-p` 位置参数传 prompt，**非 stdin**，有 8191 命令行截断风险）；step4 只读前缀裁决为允许只读核对（禁止写文件/测试）；run_claude_step12.ps1 修复 Start-Job stdin UTF-8 + step1/2/3 加 `--add-dir`。
 - v13.0.13 (2026-08-13): 绑定升级——新增 `opencode/binding-lock.json` 持久化 + `opencode/scripts/manage_binding.ps1`（-Check 校验 / -AuthorizeStep 显式授权 / authorization_log / tmp 原子写 / step4≠step3 模型族强制）；step1/2/3 默认绑定 Claude Code CLI（用户显式授权），step4=codex 保持不同模型族；mimo 脚本改 `-f` 文件模式 + `--print-logs` + 只读/防虚构前缀；三个 ps1 统一超时部分输出与失败信号（EXIT_CODE=-3）；run_claude_step12.ps1 修复 step 语义/去掉 ANTHROPIC_* 环境变量 hack。

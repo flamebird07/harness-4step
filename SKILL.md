@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode，共享逻辑在 shared/ 目录。"
-version: 13.0.15
+version: 13.0.16
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.15 — Locked CLI Binding via binding-lock.json + Enforced Queue)
+# Harness 4-Step Method (v13.0.16 — Locked CLI Binding via binding-lock.json + Enforced Queue)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -728,6 +728,7 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.16 (2026-08-13): opencode 融合后加固（F-P-01~06）——run_step.ps1 claude 分支改 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi 三处 step4 回退 300→180（对齐 manage_binding defaultT=180）；opencode-sub 改为权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读（可写改动必须走四步闭环）；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系"交叉引用 + 调度表只读限定；SKILL 澄清 verifier 兜底废弃=废弃 CLI 备用、非废弃 opencode-sub 绑定分派。版本号 13.0.15 → 13.0.16。
 - v13.0.15 (2026-08-13): opencode 适配层绑定 fail-closed 加固——manage_binding.ps1 / run_step.ps1 受支持 agent 统一为 claude/codex/mimo/kimi/opencode-sub（去 gemini）；run_step.ps1 分派前校验 schema/locked/完整绑定/受支持 agent/step3≠step4 模型族；manage_binding.ps1 补 step1/2 受支持校验；run_codex_step4.ps1 用 `-C` 传 WorkspaceDir 给 codex exec；kimi 文档对齐（-p 位置参数 + 8191 截断）；README 安装清单补 run_step.ps1 / run_kimi_step4.ps1。版本号 13.0.14 → 13.0.15。
 - v13.0.14 (2026-08-13): opencode 编排动态分派——新增统一入口 `opencode/scripts/run_step.ps1 -Step step1..4`，读 binding-lock.json 按绑定分派到对应 runner（claude/codex/mimo/kimi），opencode-sub 绑定输出 `BINDING=opencode-sub` 信号改走对应 subagent；新增 `run_kimi_step4.ps1`（kimi 用 `-p` 位置参数传 prompt，**非 stdin**，有 8191 命令行截断风险）；step4 只读前缀裁决为允许只读核对命令（Get-Content/rg/git diff），禁止写文件/测试；run_claude_step12.ps1 修复 Start-Job 子进程 stdin UTF-8 编码 + step1/2/3 加 `--add-dir`。版本号 13.0.13 → 13.0.14。
 - v13.0.13 (2026-08-13): ① 日常自审四连修：汇报模板 '14-row' → '15-row'；合并 v13.0.9 版本历史条目到 v13.0.10；binding-lock.json authorization_log 去重并按 'at' 升序重排；项目控制台新增「当前生效绑定」小节。② opencode 适配层绑定升级——新增 `opencode/binding-lock.json` 持久化 + `opencode/scripts/manage_binding.ps1`（-Check fail-closed / -AuthorizeStep 显式授权 / authorization_log / tmp 原子写 / step4≠step3 模型族强制）；step1/2/3 默认绑定 Claude Code CLI（用户显式授权），step4=codex 保持不同模型族；opencode 新增 harness-config.json 超时配置（禁止 agent 字段，防双配置源漂移）；mimo 脚本改 `-f` 文件模式 + `--print-logs` + 只读/防虚构前缀；三个 ps1 统一超时部分输出与失败信号（EXIT_CODE=-3）；run_claude_step12.ps1 修复 step 语义/去掉 ANTHROPIC_* 环境变量 hack。版本号 13.0.12 → 13.0.13。

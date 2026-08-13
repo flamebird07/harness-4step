@@ -49,23 +49,35 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 switch ($agent) {
     "claude" {
         if ($Step -notin @("step1","step2","step3")) { Fail-Cli "claude runner only supports step1/2/3" }
-        & (Join-Path $scriptDir "run_claude_step12.ps1") -Step $Step -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{120})
+        $defaultT = if ($Step -eq "step3") { 300 } else { 120 }
+        & (Join-Path $scriptDir "run_claude_step12.ps1") -Step $Step -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{$defaultT})
     }
     "codex" {
         if ($Step -ne "step4") { Fail-Cli "codex runner only supports step4" }
-        & (Join-Path $scriptDir "run_codex_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{300})
+        & (Join-Path $scriptDir "run_codex_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{180})
     }
     "mimo" {
         if ($Step -ne "step4") { Fail-Cli "mimo runner only supports step4" }
-        & (Join-Path $scriptDir "run_mimo_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{300})
+        & (Join-Path $scriptDir "run_mimo_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{180})
     }
     "kimi" {
         if ($Step -ne "step4") { Fail-Cli "kimi runner only supports step4" }
-        & (Join-Path $scriptDir "run_kimi_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{300})
+        & (Join-Path $scriptDir "run_kimi_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{180})
     }
     "opencode-sub" {
-        Write-Output "BINDING=opencode-sub"   # 主 agent 据此改走 Task 调度对应 subagent
-        exit 0
+        # 权威分派契约：主 agent 必须消费此信号并改用 Task 调度对应 subagent。
+        # 出口码 99 区别于正常完成 0——若主 agent 未消费（忽略输出），应视为未完成而非成功。
+        $subagent = switch ($Step) {
+            "step1" { "harness-auditor" }
+            "step2" { "harness-planner" }
+            "step3" { "harness-implementer" }
+            "step4" { "harness-verifier" }
+            default { Fail-Cli "Unknown step for opencode-sub: $Step" }
+        }
+        Write-Output "BINDING=opencode-sub"
+        Write-Output "STEP=$Step"
+        Write-Output "SUBAGENT=$subagent"
+        exit 99
     }
     default { Fail-Cli "Unknown agent '$agent' for $Step" }
 }

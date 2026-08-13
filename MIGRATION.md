@@ -15,7 +15,7 @@
 
 - 两个仓库的 SKILL.md、plugin/ 文件完全相同，无需合并
 - `harness-4step` 包含额外的 references/ 和 scripts/ 目录
-- 版本号统一（当前版本见 SKILL.md frontmatter，v13.0.15）
+- 版本号统一（当前版本见 SKILL.md frontmatter，v13.0.16）
 
 ## 如何迁移（当前安装方式）
 
