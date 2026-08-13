@@ -1,0 +1,11 @@
+{
+  "defaults": {
+    "timeout_seconds": 180
+  },
+  "steps": {
+    "step1": { "timeout_seconds": 120 },
+    "step2": { "timeout_seconds": 120 },
+    "step3": { "timeout_seconds": 300 },
+    "step4": { "timeout_seconds": 180 }
+  }
+}

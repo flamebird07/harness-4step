@@ -41,12 +41,28 @@ harness-4step/            # GitHub 仓库（同一仓库）
 
 2b. 把 `opencode/opencode.json` 的 `default_agent` 与 `subagent_depth` 合并到目标项目根目录的 `opencode.json`。它不指定模型，不会覆盖已有模型配置。
 
-2c. 复制 step4 脚本到 skill 目录（SKILL.md 的 step4 流程依赖，不可省略）：
+2c. 复制 CLI 脚本到 skill 目录（SKILL.md 编排依赖，不可省略）：
 
    ```
-   ~/.config/opencode/skill/four-step-harness/scripts/   ← 复制自 opencode/scripts/（run_codex_step4.ps1、run_mimo_step4.ps1、run_claude_step12.ps1）
+   ~/.config/opencode/skill/four-step-harness/scripts/   ← 复制自 opencode/scripts/（run_step.ps1、run_claude_step12.ps1、run_codex_step4.ps1、run_mimo_step4.ps1、run_kimi_step4.ps1、manage_binding.ps1）
    ```
-   复制后 SKILL.md 中的调用路径 `<skill 目录>\scripts\run_codex_step4.ps1` 即可用。
+   复制后 SKILL.md 中的调用路径 `<skill 目录>\scripts\run_codex_step4.ps1` 等即可用。
+   run_step.ps1 是统一分派入口（读 binding-lock.json 调对应 runner）；run_claude_step12.ps1 是 step1/2/3（默认绑 claude CLI）的执行脚本；run_codex_step4.ps1 / run_mimo_step4.ps1 / run_kimi_step4.ps1 是 step4 及其备用。
+
+2d. 复制绑定锁到本机（绑定是本机私有配置，不上传仓库；`manage_binding.ps1` 是其唯一读写入口）：
+
+   ```
+   ~/.config/opencode/harness/binding-lock.json          ← 复制自 opencode/binding-lock.json（默认绑定：step1/2/3=claude、step4=codex）
+   ```
+   绑定变更必须经 `manage_binding.ps1 -AuthorizeStep <step> -Agent <agent> -Authorization "<用户授权原文>"` 完成并写入授权日志；禁止手改 lock 绕过。
+
+2e. （可选）复制超时配置模板到本机：
+
+   ```
+   ~/.config/opencode/harness/harness-config.json        ← 复制自 opencode/harness-config.example.json
+   ```
+   只允许覆盖 `defaults`/`steps` 的 `timeout_seconds` 与 `description`；**禁止加 agent 字段**（绑定只由 binding-lock.json 决定，防双配置源漂移）。
+   编排时运行 `manage_binding.ps1 -ShowBindings` 查看合并后的绑定+超时，按需传 `-TimeoutSeconds`。
 
 3. （可选）让 subagent 能读取共享逻辑（只引用不复制）：**不要复制 `shared/` 到别处**——
    `shared/` 是唯一逻辑源（shared/core-logic.md §10），复制会造成副本与源头分叉。读取方式二选一：
@@ -68,9 +84,9 @@ harness-4step/            # GitHub 仓库（同一仓库）
 
 ## 跨模型差异（可选）
 
-若 opencode 配置了多个 provider/model，可在 `agents/harness-auditor.md` / `harness-verifier.md` 的
-frontmatter 加 `model:` 字段升级模型，给 `harness-implementer.md` 配更快/更便宜模型。
-**Step 4 与 Step 3 必须不同模型族**（`shared/core-logic.md` §4）。
+绑定为 CLI 后端（claude/codex/mimo）时，模型由各 CLI 侧配置（如 `claude config` / `.coderc` / mimo `-m`）；
+绑定为 `opencode-sub` 时，可在对应 `agents/*.md` frontmatter 加 `model:` 字段升级模型（审计/复审配强模型、执行配快模型）。
+**Step 4 与 Step 3 必须不同模型族**（`shared/core-logic.md` §4；每次绑定校验由 `manage_binding.ps1 -Check`/`-AuthorizeStep` 强制，不做文字自我保证）。
 
 ## 维护
 

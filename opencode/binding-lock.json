@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "locked": true,
+  "bindings": {
+    "step1": "claude",
+    "step2": "claude",
+    "step3": "claude",
+    "step4": "codex"
+  },
+  "authorization_log": [
+    {
+      "at": "2026-08-13T00:00:00+08:00",
+      "step": "bootstrap",
+      "agent": "step1/2/3=claude, step4=codex",
+      "authorization": "用户显式授权：step1/2/3 用 Claude code cli（四步法会话中明确说 step1/2/3 用Claude code cli）"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 ---
-description: 四步法第4步·复审者（保留的 subagent 备用后端）。当前 step4 默认绑定 codex CLI（见 SKILL 脚本 run_codex_step4.ps1），仅当 codex CLI 不可用且用户显式授权时才用本 subagent 兜底。只验证不改代码。共享逻辑：`shared/core-logic.md`（运行时读取：cwd=仓库根 用相对路径，或读 `HARNESS_SHARED_DIR`；勿复制 shared/，见 opencode/README.md 安装第 3 步）。Use when running the four-step harness verification phase as fallback.
+description: 四步法第4步·复审者（subagent 后端，仅当用户显式授权把 step4 绑定改为 opencode-sub 时使用；默认与备用路径是 codex/mimo CLI，见 opencode/SKILL.md）。只验证不改代码。step4 与 step3 必须不同模型族（shared/core-logic.md §4），绑定 opencode-sub 前须确认与 step3 不同族，否则先经 manage_binding.ps1 -AuthorizeStep 授权改 step3（-Check 会强制校验）。共享逻辑：`shared/core-logic.md`（运行时读取：cwd=仓库根 用相对路径，或读 `HARNESS_SHARED_DIR`；勿复制 shared/，见 opencode/README.md 安装第 3 步）。Use when running the four-step harness verification phase with an opencode-sub binding.
 mode: subagent
 permission:
   edit: deny

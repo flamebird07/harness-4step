@@ -14,7 +14,7 @@
 | Step 1 | 审查者 | 只找问题，输出问题清单（带编号） | 不写方案、不改代码 |
 | Step 2 | 方案者 | 基于问题清单出修复方案（before/after） | 不改代码、不出无编号改动 |
 | Step 3 | 执行者 | 严格按方案逐条修改 | 不分析根因、不扩大范围、不重构 |
-| Step 4 | 复审者 | 打开实际代码核对 + 跑回归，输出评级 | 不自己修复 |
+| Step 4 | 复审者 | 打开实际代码核对 + 只读核对命令，输出评级 | 不自己修复 |
 
 **Step 4 评级**: `通过` / `需调整`。`需调整` → 回到 Step 2（不回 Step 1；Step 1 只做一次）。
 
@@ -72,8 +72,8 @@
 
 | 能力 | Hermes 适配层 | opencode 适配层 |
 |------|--------------|-----------------|
-| 执行后端 | `run_cli.py` + `binding-lock.json` | `task` 调度 subagent + bash 调 CLI |
-| 配置 | `~/.hermes/binding-lock.json` + `harness-config.yaml` | `opencode/SKILL.md` + subagent 文件 |
-| 反绕过 | `plugin/`（four-step-enforcer 插件） | subagent `permission: edit: deny`（系统级） |
+| 执行后端 | `run_cli.py` + `binding-lock.json` | bash 调 CLI（绑定由 `binding-lock.json` + `manage_binding.ps1` 管理）+ `task` 调度 subagent（备用） |
+| 配置 | `~/.hermes/binding-lock.json` + `harness-config.yaml` | `opencode/binding-lock.json`（模板）+ `harness-config` + `opencode/SKILL.md` |
+| 反绕过 | `plugin/`（four-step-enforcer 插件） | 绑定 CLI：prompt 只读前缀 + 统一经 `scripts/` 脚本调用 + 事后基线回退；绑定 opencode-sub：subagent `permission: edit: deny` |
 
 任何平台**不得在本文件之外**复制逻辑实现；适配层只实现调用，不重新发明逻辑。
