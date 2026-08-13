@@ -25,7 +25,7 @@ permission:
 
 ## 输出格式（必须严格遵循，格式定义见 shared/core-logic.md）
 
-写入 `.harness/<task>/step1-problems.md`，每项：
+在回复中返回以下结构化问题清单；由编排主代理原样保存为 `.harness/<task>/step1-problems.md`。每项：
 
 ```
 ## P-01 | 文件路径:行号 | 现象描述 | 影响

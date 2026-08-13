@@ -12,7 +12,9 @@ harness-4step/            # GitHub 仓库（同一仓库）
 ├── SKILL.md              # Hermes 适配层（run_cli.py + binding-lock.json）
 └── opencode/             # opencode 适配层（本目录）
     ├── SKILL.md          #   编排规则
-    ├── agents/           #   4 个独立 subagent（权限隔离）
+    ├── agents/           #   1 个主编排 agent + 5 个权限隔离的 subagent
+    ├── opencode.json     #   动态编排项目配置模板
+    ├── DYNAMIC-DELEGATION.md # 动态拆分与并行边界
     └── README.md
 ```
 
@@ -26,16 +28,20 @@ harness-4step/            # GitHub 仓库（同一仓库）
    ~/.config/opencode/skill/four-step-harness/SKILL.md   ← 复制自 opencode/SKILL.md
    ```
 
-2. 复制 4 个 subagent 到全局 agent 目录：
+2. 复制主编排 agent 与 5 个 subagent 到全局 agents 目录：
 
    ```
-   ~/.config/opencode/agent/harness-auditor.md
-   ~/.config/opencode/agent/harness-planner.md
-   ~/.config/opencode/agent/harness-implementer.md
-   ~/.config/opencode/agent/harness-verifier.md          ← 复制自 opencode/agents/
+   ~/.config/opencode/agents/harness-orchestrator.md
+   ~/.config/opencode/agents/harness-explorer.md
+   ~/.config/opencode/agents/harness-auditor.md
+   ~/.config/opencode/agents/harness-planner.md
+   ~/.config/opencode/agents/harness-implementer.md
+   ~/.config/opencode/agents/harness-verifier.md          ← 复制自 opencode/agents/
    ```
 
-2b. 复制 step4 脚本到 skill 目录（SKILL.md 的 step4 流程依赖，不可省略）：
+2b. 把 `opencode/opencode.json` 的 `default_agent` 与 `subagent_depth` 合并到目标项目根目录的 `opencode.json`。它不指定模型，不会覆盖已有模型配置。
+
+2c. 复制 step4 脚本到 skill 目录（SKILL.md 的 step4 流程依赖，不可省略）：
 
    ```
    ~/.config/opencode/skill/four-step-harness/scripts/   ← 复制自 opencode/scripts/（run_codex_step4.ps1、run_mimo_step4.ps1、run_claude_step12.ps1）
@@ -58,7 +64,7 @@ harness-4step/            # GitHub 仓库（同一仓库）
 
 ## 验证
 
-`opencode agent list` 应出现 `harness-*`；在会话里触发 `four-step-harness` skill 关键词即可被加载。
+`opencode agent list` 应出现 `harness-*`；选择 `harness-orchestrator` 后，复杂任务会先并行侦察、再按独立工作包进入四步闭环。完整调度规则见 [DYNAMIC-DELEGATION.md](DYNAMIC-DELEGATION.md)。
 
 ## 跨模型差异（可选）
 

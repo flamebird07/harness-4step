@@ -24,7 +24,7 @@ permission:
 
 ## 输出格式（必须严格遵循，格式定义见 shared/core-logic.md）
 
-写入 `.harness/<task>/step2-plan.md`，每项：
+在回复中返回以下结构化方案；由编排主代理原样保存为 `.harness/<task>/step2-plan.md`。每项：
 
 ```
 ## F-<P编号> | 文件路径 | 行号 | before代码 | after代码

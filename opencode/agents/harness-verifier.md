@@ -26,7 +26,7 @@ permission:
 
 ## 输出格式（必须严格遵循，格式定义见 shared/core-logic.md）
 
-写入 `.harness/<task>/step4-review.md`，逐条检查每个原始问题：
+在回复中返回以下结构化复审结果；由编排主代理原样保存为 `.harness/<task>/step4-review.md`。逐条检查每个原始问题：
 
 ```
 ## P-01 | 修复评级: 已解决 / 部分解决 / 未解决 | 证据: <从实际代码中引用>
