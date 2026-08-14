@@ -7,7 +7,7 @@
 | 组件 | 作用 |
 |------|------|
 | shared/ | **唯一逻辑源**：core-logic.md（四步法逻辑）+ binding-recommendation.md（推荐表） |
-| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.16） |
+| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.18） |
 | opencode/ | opencode 适配层：SKILL.md + 4 个 harness-* subagents + README |
 | plugin/ | harness-4step 技术强制执行插件 |
 | references/ | 参考文档（CLI 语法、故障诊断、会话取证） |
