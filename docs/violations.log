@@ -1,0 +1,57 @@
+# Harness Violations Log
+
+> 本文件为违规记录的唯一 tracked 路径（F-O01：从 `.harness/split-and-binding/violations.log` 迁入，`.harness/` 被 gitignore 忽略，覆盖即丢失）。追加用 `opencode/scripts/manage_binding.ps1 -RecordViolation -Id <id> -By <actor> -Reason <文本>`，避免手写覆盖历史。
+> 本文件由 opencode/scripts/manage_binding.ps1 -RecordViolation 维护，须随仓库入库（committed），勿 placed 于 .harness/ 或 gitignored 目录。
+
+## V-2026-08-14-01：step1 违规使用 opencode-sub（应绑定 Claude Code CLI）
+
+**时间**：2026-08-14 12:47
+**责任人**：opencode 主 agent
+**触发任务**：.harness/split-and-binding/
+
+### 违规内容
+opencode/binding-lock.json 锁定 `step1=claude`（Claude Code CLI），主 agent 用 Task 调 `harness-auditor` subagent（即 `opencode-sub` 后端）执行 step1 审查，违反绑定。
+
+### 违反的规则
+1. `opencode/binding-lock.json:5` step1=claude
+2. `shared/binding-recommendation.md:37` "绑定变更 = 用户显式授权，不得为'内容修复质量'而切绑定"
+3. `SKILL.md:36` "每步 CLI 绑定后不可更改"
+4. `SKILL.md:84` "绑定变更必须通过 `--authorize-binding-change` 命令记录用户明确授权"
+5. `shared/core-logic.md:36` "绑定变更必须是用户显式授权，禁止执行者/审查者自行改绑定来绕过失败"
+
+### 触发原因
+主 agent 套用 opencode/SKILL.md 的「当前锁定配置」描述（"step1 = harness-auditor subagent"）作为执行依据，**没有先核对实际 binding-lock.json**。SKILL.md 描述的是默认推荐；当前仓库已通过 `authorization_log` 显式锁定 step1/2/3=claude。
+
+### 处置
+1. ✅ 删除违规产物 `.harness/split-and-binding/step1-problems.md`（已删）
+2. 🔄 从违规点重走 step1：用 `opencode/scripts/run_claude_step12.ps1`（绑定 step1=claude 的 runner）重跑
+3. ✅ 记录本条违规
+
+### 教训
+主 agent 在调 subagent/CLI 前必须先 cat 实际 binding-lock.json，不能凭 SKILL.md 描述或默认推荐执行。SKILL.md「当前锁定配置」是辅助说明，binding-lock.json 才是唯一事实。
+
+---
+
+## V-2026-08-14-02：Loop 1 Step3 实现漏写 `data["counts"] = counts`
+
+**时间**：2026-08-14（Loop 5 step4 验证阶段）
+**责任人**：Claude CLI（step3 执行者）
+**触发任务**：.harness/split-and-binding/
+
+### 违规内容
+`scripts/todo_queue.py` summary() 函数 F-O01 改动后漏写 `data["counts"] = counts` 赋值行，导致 5 个 todo_queue 测试 fail（KeyError: 'counts'）。
+
+### 违反的规则
+1. `SKILL.md#step3` 必须产生 diff
+2. F-O01 修复方案 before→after 完整，但实现缺一行
+
+### 触发原因
+Step 3 硬性禁止跑测试（`STEP_PROMPT_PREFIXES.step3`），step4 codex 静态核对也不跑测试，结果 5 个测试 fail 直到 Loop 5 阶段主 agent 主动验证才暴露。
+
+### 处置
+1. ✅ 启动 Loop 6：补 `data["counts"] = counts` 一行
+2. ✅ Loop 7：修 test_success_after_timeout_still_requires_split 测试逻辑
+3. ✅ 28/28 测试最终全过
+
+### 教训
+Step 3 禁跑测试 + Step 4 静态核对 = regression 漏过。建议 Step 4 至少跑一次 pytest（可作特例）。

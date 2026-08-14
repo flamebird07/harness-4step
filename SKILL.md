@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode，共享逻辑在 shared/ 目录。"
-version: 13.0.17
+version: 13.0.18
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.17 — Split-Priority + Binding-Lock Tech-Force)
+# Harness 4-Step Method (v13.0.18 — Orchestrator Auto-Read Binding-Lock)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -113,7 +113,7 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 - **适配层各司其职**：平台差异（CLI 调用方式、subagent 权限、队列机制、超时/熔断等）只写在各平台的适配层。
   - Hermes 适配层：本 `SKILL.md` + `scripts/run_cli.py` + `binding-lock.json` + `plugin/`（本文件即 Hermes 侧）
   - opencode 适配层：`opencode/` 目录（`opencode/SKILL.md` + `opencode/agents/harness-*.md`）
-- **后端绑定**：每个 Step 可绑定 CLI 或宿主内 subagent，绑定语义见 `shared/core-logic.md` §4；按步骤特性推荐见 `shared/binding-recommendation.md`。本 Hermes 侧沿用 `binding-lock.json` 作为唯一绑定来源（每步一个外部 CLI）；opencode 侧用 subagent + 可选 CLI 实现同样语义。
+- **后端绑定**：每个 Step 可绑定 CLI 或宿主内 subagent，绑定语义见 `shared/core-logic.md` §4；按步骤特性推荐见 `shared/binding-recommendation.md`。本 Hermes 侧沿用 `binding-lock.json` 作为唯一绑定来源（每步一个外部 CLI）；opencode 侧默认 CLI 绑定（step1/2/3=claude、step4=codex，由 `opencode/binding-lock.json` 决定），subagent 仅当绑定=opencode-sub 时经 `run_step.ps1` 分派（与 `opencode/SKILL.md#后端绑定` 一致）。
 - **合并说明**：旧的 `four-step-harness`（Hermes skills 内的简化旧版）已废弃，其内容并入本项目的 `shared/` + 适配层，不存在第二套逻辑。
 
 任何平台若发现共享逻辑有缺陷，修正必须在 `shared/core-logic.md`，并同步更新两侧适配层引用说明（如新增步骤、变更编号规则、改循环上限）。
@@ -128,6 +128,8 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 | Step 2 | 由 binding-lock.json 决定 | `run_cli.py --step step2` | 120s | 一次精简重试，再拆分（不换 CLI） | 不能改代码 |
 | Step 3 | 由 binding-lock.json 决定 | `run_cli.py --step step3` | 300s | 按已批准方案实施 | 不能做方案/审查 |
 | Step 4 | 由 binding-lock.json 决定 | `run_cli.py --step step4` | 180s | 一次精简重试，再拆分（不换 CLI） | 不能改代码 |
+
+> **注记**：本表 Real CLI 列为 **Hermes 适配层** 工具；**opencode 适配层** 各步统一经 `opencode/scripts/run_step.ps1 -Step step<N>`（绑定由 binding-lock.json 决定），`run_cli.py` 仅 Hermes 侧使用。
 
 ## Step 1 版本号一致性审查（v13.0.5 新增）
 

@@ -6,6 +6,8 @@ opencode 适配层绑定管理：加载/校验/展示 binding-lock.json，仅允
 用法：
   manage_binding.ps1 -ShowBindings                          # 展示每步绑定 + 合并配置后的超时 + 可执行文件状态
   manage_binding.ps1 -Check                                 # 校验（fail-closed）：lock 存在且有效、bindings 恰好 step1..step4、step4 与 step3 不同模型族
+  manage_binding.ps1 -InstallFromRepo                       # 幂等：把仓库 opencode/binding-lock.json 同步到本机锁路径（保留本机 authorization_log）
+  manage_binding.ps1 -RecordViolation -Id <id> -By <actor> -Reason "<文本>"   # 追加写入 docs/violations.log（原因+责任人+时间戳）
   manage_binding.ps1 -AuthorizeStep step3 -Agent claude -Authorization "<用户授权原文，≥12字符>"
 
 路径：lock 默认 $HOME/.config/opencode/harness/binding-lock.json（本机私有；模板在仓库 opencode/binding-lock.json）；
@@ -16,6 +18,11 @@ param(
     [string]$ConfigPath = $env:OPCODE_HARNESS_CONFIG,
     [switch]$ShowBindings,
     [switch]$Check,
+    [switch]$InstallFromRepo,
+    [switch]$RecordViolation,
+    [string]$Id,
+    [string]$By,
+    [string]$Reason,
     [string]$AuthorizeStep,
     [string]$Agent,
     [string]$Authorization
@@ -104,6 +111,54 @@ if ($ShowBindings -or $Check) {
     exit 0
 }
 
+# F-R-01：把仓库 opencode/binding-lock.json 同步到本机锁路径（幂等，保留本机 authorization_log）
+if ($InstallFromRepo) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $repoLock = Join-Path (Split-Path -Parent $scriptDir) "binding-lock.json"   # opencode/binding-lock.json
+    if (-not (Test-Path -LiteralPath $repoLock)) {
+        Fail-Cli "Missing repo binding lock template: $repoLock"
+    }
+    try { $repoLockData = Get-Content -LiteralPath $repoLock -Encoding UTF8 -Raw | ConvertFrom-Json }
+    catch { Fail-Cli "Invalid repo binding lock JSON: $repoLock ($_)" }
+    $dest = Resolve-LockPath
+    if (Test-Path -LiteralPath $dest) {
+        try {
+            $existing = Get-Content -LiteralPath $dest -Encoding UTF8 -Raw | ConvertFrom-Json
+            if ($existing.authorization_log) { $repoLockData.authorization_log = $existing.authorization_log }
+        } catch {
+            Write-Output "WARN=本机 lock 无法解析，将覆盖：$dest ($_)"
+        }
+    }
+    # F2-A-02：确保目标锁文件父目录存在（首次安装时 ~/.config/opencode/harness/ 可能不存在）
+    $destParent = Split-Path -Parent $dest
+    New-Item -ItemType Directory -Path $destParent -Force | Out-Null
+    $json = $repoLockData | ConvertTo-Json -Depth 6
+    $tmp = $dest + ".tmp"
+    Set-Content -LiteralPath $tmp -Value $json -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $dest -Force
+    Write-Output ("INSTALLED_FROM_REPO=$repoLock -> $dest")
+    Write-Output "需再跑 manage_binding.ps1 -Check 确认同步后绑定有效"
+    exit 0
+}
+
+# F-O01：追加记录违规到仓库 tracked 路径 docs/violations.log（避免手写覆盖历史）
+if ($RecordViolation) {
+    if (-not $Id -or -not $By -or -not $Reason) {
+        Fail-Cli "用法：manage_binding.ps1 -RecordViolation -Id <id> -By <actor> -Reason <文本>"
+    }
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)   # scripts -> opencode -> 仓库根
+    $logPath = Join-Path $repoRoot "docs\violations.log"
+    if (-not (Test-Path -LiteralPath $logPath)) {
+        Set-Content -LiteralPath $logPath -Value "# Harness Violations Log" -Encoding UTF8
+    }
+    $stamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
+    $entry = "`n## $Id`n`n**时间**：$stamp`n**责任人**：$By`n**原因**：$Reason`n---`n"
+    Add-Content -LiteralPath $logPath -Value $entry -Encoding UTF8
+    Write-Output ("VIOLATION_RECORDED=$logPath (id=$Id, by=$By)")
+    exit 0
+}
+
 if ($AuthorizeStep) {
     if ($KNOWN_STEPS -notcontains $AuthorizeStep) { Fail-Cli "未知步骤：$AuthorizeStep" }
     if (-not $AGENT_FAMILY.ContainsKey($Agent)) { Fail-Cli "未知 agent：$Agent" }
@@ -112,6 +167,13 @@ if ($AuthorizeStep) {
     }
     $path = Resolve-LockPath
     $lock = Load-Lock $path
+    # F-R-02：授权前校验 CLI 可用性（opencode-sub 为 subagent，无需系统命令）
+    if ($Agent -ne "opencode-sub") {
+        $exe = Get-Command $Agent -ErrorAction SilentlyContinue
+        if (-not $exe) {
+            Fail-Cli "授权失败：PATH 无 $Agent，先安装/配置后再授权"
+        }
+    }
     $lock.bindings.$AuthorizeStep = $Agent
     # 写入前先校验模型族硬约束，不满足则拒绝写入（fail-closed）
     Test-Step1Step2Supported $lock
@@ -133,5 +195,5 @@ if ($AuthorizeStep) {
     exit 0
 }
 
-Write-Output "用法：manage_binding.ps1 -ShowBindings | -Check | -AuthorizeStep <step> -Agent <agent> -Authorization <授权原文>"
+Write-Output "用法：manage_binding.ps1 -ShowBindings | -Check | -InstallFromRepo | -RecordViolation -Id <id> -By <actor> -Reason <文本> | -AuthorizeStep <step> -Agent <agent> -Authorization <授权原文>"
 exit 1

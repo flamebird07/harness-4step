@@ -71,6 +71,7 @@ switch ($agent) {
         & (Join-Path $scriptDir "run_kimi_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{180})
     }
     "opencode-sub" {
+        # 仅当 binding-lock 显式绑定 opencode-sub 时命中；默认绑定为 claude/codex，此分支不触发。
         # 权威分派契约：主 agent 必须消费此信号并改用 Task 调度对应 subagent。
         # 出口码 99 区别于正常完成 0——若主 agent 未消费（忽略输出），应视为未完成而非成功。
         $subagent = switch ($Step) {
