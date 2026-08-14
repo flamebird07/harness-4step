@@ -55,6 +55,8 @@ _DEFAULT_PRUNE_INTERVAL_SECONDS = 30
 # Tools that are always blocked: direct tool edits can never substitute for a
 # Step 3 CLI execution. skill_manage is included because write_file/patch
 # sub-actions modify code.
+# 绑定锁（binding-lock.json）纳入 terminal 层强制校验（F-B-04）：只能经
+# run_cli.py --authorize-binding-change 修改，直接改写会被 _is_binding_lock_tamper 拦截。
 _BLOCKED_TOOLS: Set[str] = {"write_file", "patch", "skill_manage"}
 
 def _is_run_cli_call(args: Any) -> bool:
@@ -94,6 +96,77 @@ def _is_direct_harness_cli_call(args: Any) -> bool:
         if base.endswith(ext):
             base = base[: -len(ext)]
     return base in {"codex", "claude", "kimi", "mimo"}
+
+
+_TERMINAL_COMPOUND = re.compile(r"[;&|]|\b(?:&&|\|\|)\b")   # 复合命令操作符
+
+
+def _tokenize(cmd: str) -> list[str]:
+    """切分命令为独立 token（忽略引号内空白），用于白名单逐 token 判定。"""
+    return re.findall(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|\S+', cmd)
+
+
+def _run_cli_whitelist_ok(cmd: str) -> bool:
+    """白名单：仅认可 run_cli.py 的 --step 或 --authorize-binding-change 单命令。"""
+    if _TERMINAL_COMPOUND.search(cmd):            # 禁复合：; & && | 一律不放行
+        return False
+    toks = _tokenize(cmd)
+    # 必须是 run_cli.py 单条命令，且无额外写操作 token
+    if "run_cli.py" not in toks:
+        return False
+    if any(t in toks for t in ("--step",)) or ("--authorize-binding-change" in toks):
+        # 授权写仍须逐 token 复核：整条命令不得再含 shell 写符号/重定向/其它修改性命令
+        rest = " ".join(toks)
+        if re.search(r"(>>|>|;|&&|\|\||echo|Set-Content|Out-File|\bmv\b|\bmove\b|\bcopy\b|\brm\b|\bdel\b)", rest):
+            return False
+        return True
+    return False
+
+
+def _redirect_writes_binding_lock(cmd: str) -> bool:
+    """F3-L3-01：检测命令是否把输出写入/复制进 binding-lock（绕过授权写）。
+
+    覆盖 `> file` / `>> file` / `tee file` / `cp src dst`。
+    只匹配「目标文件」的 basename 是否含 binding-lock；命令其它部分（如
+    `cat binding-lock.json > backup.txt` 的源）不触发，只读 cat 仍放行。
+    """
+    patterns = [
+        r"(?:1>>|2>>|>>|1>|2|>)\s*([^\s;&|]+)",        # shell 重定向目标（完整长形式优先，F5-L5-01）
+        r"\btee\s+([^\s;&|]+)",                  # tee 目标
+        r"\bcp\s+[^\s;&|]+\s+([^\s;&|]+)",       # cp 的 dst（最后一个非空 token）
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, cmd, re.IGNORECASE):
+            target = m.group(1).strip().strip("\"'")
+            if re.search(r"binding[-_]lock", target, re.IGNORECASE):
+                return True
+    return False
+
+
+def _is_binding_lock_tamper(args: Any) -> bool:
+    """检测终端命令是否试图直接改写 binding-lock.json（绕过 run_cli.py 授权）。
+
+    改为 token 级白名单：仅拦「写」binding-lock；放行只读 cat/type/ls 查看，
+    以及整条通过白名单的 run_cli.py --authorize-binding-change 单命令（F-B-04）。
+    """
+    if not isinstance(args, dict):
+        return False
+    cmd = str(args.get("command", "") or "")
+    if not re.search(r"binding[-_]lock", cmd, re.IGNORECASE):
+        return False
+    # F3-L3-01：白名单判定前先解析「重定向/复制目标」。即便命令以只读 cat 开头，
+    # 只要输出被重定向进 binding-lock（> file / >> file / tee file / cp src dst），
+    # 即构成写，立即判篡改——不得因含只读 token 而放行。
+    if _redirect_writes_binding_lock(cmd):
+        return True
+    # 纯只读（cat / type / Get-Content / Select-String / ls）不构成篡改 → 放行
+    if re.search(r"\b(cat|type|more|Get-Content|Select-String|ls|dir)\b", cmd, re.IGNORECASE) \
+       and not _TERMINAL_COMPOUND.search(cmd):
+        return False
+    # 走到这里 = 有写意图；白名单放行唯一合法写路径，且须整条命令通过 token 白名单
+    if _run_cli_whitelist_ok(cmd):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -361,15 +434,21 @@ def _on_pre_tool_call(
     if tool_name == "delegate_task":
         return None
 
-    # --- terminal with run_cli.py: allow (status checked in post_tool_call) ---
-    if tool_name == "terminal" and _is_run_cli_call(args):
-        return None
-
-    if tool_name == "terminal" and _is_direct_harness_cli_call(args):
-        return {"action": "block", "message": (
-            "🚫 BLOCKED by harness-4step: invoke Codex/Kimi only through "
-            "run_cli.py so the to-do state, evidence, and per-step report are recorded."
-        )}
+    # --- terminal: 统一串行判定（F-B-04）——
+    # 去掉 run_cli 短路，先 tamper（写 binding-lock），再 direct CLI。
+    if tool_name == "terminal":
+        if _is_binding_lock_tamper(args):
+            return {"action": "block", "message": (
+                "🚫 BLOCKED by harness-4step: 绑定锁（binding-lock.json）只能经 "
+                "`run_cli.py --authorize-binding-change` 单条命令显式授权修改；禁止复合命令/"
+                "shell 重定向直接改写（F-B-04）。只读查看可用 cat。"
+            )}
+        if _is_direct_harness_cli_call(args):
+            return {"action": "block", "message": (
+                "🚫 BLOCKED by harness-4step: invoke Codex/Kimi only through "
+                "run_cli.py so the to-do state, evidence, and per-step report are recorded."
+            )}
+        # 合法 run_cli.py 单命令放行（post_hook 仍校验成功与否）
 
     # --- write_file/patch: check Step 1 ---
     if tool_name in _BLOCKED_TOOLS:

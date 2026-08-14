@@ -13,6 +13,24 @@ ATOMIC_FIELDS = {"id", "title", "acceptance", "files"}
 STEPS = ("step1", "step2", "step3", "step4")
 
 
+def _split_on_first_timeout() -> bool:
+    """超时即拆开关：HERMES_SPLIT_ON_FIRST_TIMEOUT=1（默认开）时，只读步骤第 1 次超时即触发拆分。"""
+    import os
+    return os.environ.get("HERMES_SPLIT_ON_FIRST_TIMEOUT", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _is_timeout_evidence(evidence_path: str) -> bool:
+    """识别 run_cli 传入的超时证据串（failure_reason 前缀，如 'Timeout after 120s'）。"""
+    return "timeout" in (evidence_path or "").lower()
+
+
+def decide_disposition(item: dict[str, Any], step: str, attempt: int, is_timeout: bool) -> str:
+    """只读步骤失败处置优先级（core-logic §4b）：超时即拆（第 1 次），否则 2 次失败才拆。"""
+    if _split_on_first_timeout() and is_timeout:
+        return "split" if attempt >= 1 else "retry"
+    return "split" if attempt >= 2 else "retry"
+
+
 def queue_path(task_id: str) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", task_id):
         raise ValueError("task-id must contain only letters, numbers, dot, underscore, or hyphen")
@@ -94,6 +112,9 @@ def split(task_id: str, parent_id: str, children: list[dict[str, Any]], reason: 
         c.update(state="pending", loops=0, history=[{"event": "created_by_split", "parent": parent_id}])
         prepared.append(c)
     parent["state"] = "split"
+    # F-A-04：split() 是唯一「解套」出口——清除拆分门粘性标记，使子项可独立领取。
+    parent["split_required"] = False
+    parent["pending_split"] = False
     parent.setdefault("history", []).append({"event": "split", "reason": reason, "children": [x["id"] for x in prepared]})
     data["items"].extend(prepared); _write(path, data)
     return prepared
@@ -148,11 +169,28 @@ def record_step(task_id: str, item_id: str, step: str, success: bool, evidence_p
              "attempt": attempts[step], "evidence": evidence_path}
     item.setdefault("history", []).append(event)
     if success:
-        next_index = STEPS.index(step) + 1
-        item["next_step"] = STEPS[next_index] if next_index < len(STEPS) else "finish"
-    elif step in {"step1", "step2", "step4"} and attempts[step] >= 2:
-        item["split_required"] = True
-        item["history"].append({"event": "split_required", "reason": "two failed read-only attempts", "step": step})
+        # F-A-04：若该 step 曾因超时被判「需拆分」（经由降级换 CLI 重跑成功），
+        # 拆分门不因成功而消失——仍要求先拆分，禁止「成功降级=免拆分」。
+        if item.get("pending_split"):
+            item["split_required"] = True
+            item["history"].append({"event": "split_required",
+                                    "reason": "step previously timed out and was routed around by CLI switch",
+                                    "step": step})
+            item["pending_split"] = True   # 锁定，直到真正 split()
+        else:
+            next_index = STEPS.index(step) + 1
+            item["next_step"] = STEPS[next_index] if next_index < len(STEPS) else "finish"
+    elif step in {"step1", "step2", "step4"}:
+        # F-A-02/F-A-03/F-A-04：超时即拆（第 1 次），或 2 次非超时失败；
+        # 「换 CLI 重跑」不计入免拆（decide_disposition 判定，拆分优先于降级）。
+        is_timeout = _is_timeout_evidence(evidence_path)
+        if decide_disposition(item, step, attempts[step], is_timeout) == "split":
+            item["split_required"] = True
+            item["pending_split"] = True
+            item["history"].append({"event": "split_required",
+                                    "reason": ("read-only timeout on first attempt" if is_timeout
+                                               else "two failed read-only attempts"),
+                                    "step": step})
     _write(path, data)
     return item
 
@@ -191,6 +229,12 @@ def recover(task_id: str, item_id: str, note: str = "") -> dict[str, Any]:
 def summary(task_id: str) -> dict[str, Any]:
     data = _read(queue_path(task_id))
     counts = {state: sum(x.get("state") == state for x in data["items"]) for state in VALID_STATES}
-    data["counts"] = counts
-    data["complete"] = counts["pending"] == counts["running"] == counts["blocked"] == 0
+    # F-O01：显式暴露「等待拆分」的卡死项，避免 UI 上混同正常 pending/running 而不可察觉。
+    awaits_split = [x["id"] for x in data["items"]
+                    if x.get("split_required") and x.get("state") in {"pending", "running"}]
+    counts["awaits_split"] = len(awaits_split)
+    data["counts"] = counts                       # 补：把 counts 写入返回 dict
+    data["awaits_split_ids"] = awaits_split
+    data["complete"] = (counts["pending"] == counts["running"] == counts["blocked"] == 0
+                        and not awaits_split)
     return data

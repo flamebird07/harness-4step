@@ -416,6 +416,19 @@ def test_direct_cli_bypass_is_blocked(ctx):
     print("  ✅ PASS: direct CLI is blocked; runner is allowed")
 
 
+def test_redirect_append_to_binding_lock_blocked(ctx):
+    print("Test 17: '>>' append to binding-lock is treated as a write...")
+    tm = mod._redirect_writes_binding_lock
+    # >> 追加必须被判定为写（F4-L4-01：旧正则捕获 group(1)='>', 新正则捕获 'binding-lock.json'）
+    assert tm("cat x >> binding-lock.json") is True, ">> append must be blocked"
+    assert tm("cat x > binding-lock.json") is True, "single > must be blocked"
+    assert tm("echo hi 2>> binding-lock.json") is True, "2>> must be blocked"
+    assert tm("echo hi 1>> binding-lock.json") is True, "1>> must be blocked"
+    # 纯只读 cat 后重定向到别处（源是 binding-lock）不得触发
+    assert tm("cat binding-lock.json > backup.txt") is False, "read-then-copy-out must NOT trigger"
+    print("  ✅ PASS: append/single/stderr redirect each detected; read-only copy-out allowed")
+
+
 # ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
@@ -470,9 +483,11 @@ def main():
     print()
     test_direct_cli_bypass_is_blocked(ctx)
     print()
-    
+    test_redirect_append_to_binding_lock_blocked(ctx)
+    print()
+
     print("=" * 60)
-    print("All 16 tests PASSED ✅")
+    print("All 17 tests PASSED ✅")
     print("=" * 60)
     print()
     print("Summary:")

@@ -3,7 +3,8 @@
     [Parameter(Mandatory = $true)][string]$PromptFile,
     [Parameter(Mandatory = $true)][string]$WorkspaceDir,
     [Parameter(Mandatory = $true)][string]$OutDir,
-    [int]$TimeoutSeconds = 0
+    [int]$TimeoutSeconds = 0,
+    [string]$SplitOf = ""       # F-A-06：非空 = 本次为拆分重跑，父项标记拆分
 )
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -45,6 +46,11 @@ if (Test-Path -LiteralPath $cfgPath) {
     if ($null -ne $cfg -and $TimeoutSeconds -eq 0) { $timeout = $cfg.steps.$Step.timeout_seconds }
 }
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# F-A-06：拆分契约输出——供编排层把子项落为独立工作包（唯一逻辑源见 core-logic §4b/§6b）
+if ($SplitOf) {
+    Write-Output "SPLIT=child-of-$SplitOf"
+    Write-Output "   子项须独立完成 Step1→4；子项 Step4 需调整则按 core-logic §6b 回 Step2 迭代"
+}
 # 分派
 switch ($agent) {
     "claude" {

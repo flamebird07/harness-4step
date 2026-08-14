@@ -98,6 +98,44 @@ class TodoQueueTests(unittest.TestCase):
         self.assertIsNone(todo_queue.next_item("test-task"))
         self.assertEqual(todo_queue.summary("test-task")["counts"]["pending"], 1)
 
+    def test_first_timeout_triggers_split(self):
+        # F-A-02：只读步骤第 1 次超时即触发拆分（HERMES_SPLIT_ON_FIRST_TIMEOUT 默认开）
+        todo_queue.add("test-task", self.item("item", ["a.py"]))
+        todo_queue.next_item("test-task")
+        todo_queue.begin_step("test-task", "item", "step1")
+        item = todo_queue.record_step("test-task", "item", "step1", False, "Timeout after 120s")
+        self.assertTrue(item["split_required"])
+        self.assertTrue(item["pending_split"])
+
+    def test_success_after_timeout_still_requires_split(self):
+        # F-A-04 粘性：step1 超时→pending_split 置位后，record_step 即便 success
+        # 也不清除拆分门（todo_queue.py:171-179）；begin_step 会拒绝重入 step1
+        # （split_required 拦截），故此处直接验证 record_step 自身的 success 分支。
+        todo_queue.add("test-task", self.item("item", ["a.py"]))
+        todo_queue.next_item("test-task")
+        todo_queue.begin_step("test-task", "item", "step1")
+        todo_queue.record_step("test-task", "item", "step1", False, "Timeout after 120s")
+        # 直接验证 record_step success 分支的粘性（绕过 begin_step 属测试范围）
+        item = todo_queue.record_step("test-task", "item", "step1", True, "step1.json")
+        self.assertTrue(item["split_required"], "split_required must remain sticky on success")
+        self.assertTrue(item["pending_split"], "pending_split must remain sticky on success")
+        # split() 解除门验证
+        todo_queue.split("test-task", "item", [self.item("child", ["a.py"])], "split after timeout")
+        self.assertEqual(todo_queue.summary("test-task")["counts"].get("awaits_split", 0), 0)
+
+    def test_summary_exposes_awaits_split(self):
+        # F-O01：卡在拆分门的 item 在摘要中显式可见 awaits_split，且不算 complete
+        todo_queue.add("test-task", self.item("item", ["a.py"]))
+        todo_queue.next_item("test-task")
+        todo_queue.begin_step("test-task", "item", "step1")
+        todo_queue.record_step("test-task", "item", "step1", False, "Timeout after 120s")
+        summ = todo_queue.summary("test-task")
+        self.assertEqual(summ["counts"]["awaits_split"], 1)
+        self.assertEqual(summ["awaits_split_ids"], ["item"])
+        self.assertFalse(summ["complete"])
+        todo_queue.recover("test-task", "item")          # recover 保留拆分门
+        self.assertEqual(todo_queue.summary("test-task")["counts"]["awaits_split"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

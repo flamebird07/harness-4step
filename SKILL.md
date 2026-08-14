@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode，共享逻辑在 shared/ 目录。"
-version: 13.0.16
+version: 13.0.17
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.16 — Locked CLI Binding via binding-lock.json + Enforced Queue)
+# Harness 4-Step Method (v13.0.17 — Split-Priority + Binding-Lock Tech-Force)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -87,7 +87,7 @@ CLI 绑定（`binding-lock.json`、`harness-config.yaml`）是**本机配置**�
 
 所有 `.cmd`/`.bat` 通过 shell 启动（避免 CreateProcess 失败）。
 
-### 绑定机制
+### 绑定机制  <!-- anchor: binding-mechanism -->
 
 - Agent 绑定由 `binding-lock.json` 决定，支持**步骤级粒度**（同一 CLI 可绑定不同步骤）
 - `harness-config.yaml` 可配置超时、prompt 模板等，但**不能更改 agent 绑定**
@@ -124,10 +124,10 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 
 | Step | Agent | Real CLI | Timeout | Fallback | 限制 |
 |------|-------|----------|---------|----------|------|
-| Step 1 | 由 binding-lock.json 决定 | `run_cli.py --step step1` | 120s | 一次精简重试，再拆分 | 不能改代码 |
-| Step 2 | 由 binding-lock.json 决定 | `run_cli.py --step step2` | 120s | 一次精简重试，再拆分 | 不能改代码 |
+| Step 1 | 由 binding-lock.json 决定 | `run_cli.py --step step1` | 120s | 一次精简重试，再拆分（不换 CLI） | 不能改代码 |
+| Step 2 | 由 binding-lock.json 决定 | `run_cli.py --step step2` | 120s | 一次精简重试，再拆分（不换 CLI） | 不能改代码 |
 | Step 3 | 由 binding-lock.json 决定 | `run_cli.py --step step3` | 300s | 按已批准方案实施 | 不能做方案/审查 |
-| Step 4 | 由 binding-lock.json 决定 | `run_cli.py --step step4` | 180s | 一次精简重试，再拆分 | 不能改代码 |
+| Step 4 | 由 binding-lock.json 决定 | `run_cli.py --step step4` | 180s | 一次精简重试，再拆分（不换 CLI） | 不能改代码 |
 
 ## Step 1 版本号一致性审查（v13.0.5 新增）
 
@@ -152,13 +152,13 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 -> 不一致项需在 Step 2 方案中修复
 ```
 
-## v13 强制执行门
+## v13 强制执行门  <!-- anchor: enforcement-gates -->
 
 1. **绑定锁**：`~/.hermes/binding-lock.json` 是唯一绑定来源。`harness-config.yaml` 不能改 agent；只有用户明确授权文本通过 `--authorize-binding-change` 记录后才可改动。
    - **诊断优先**：CLI 失败后，必须先诊断并分类失败原因（参见 Failure Classification Matrix），再考虑是否需要变更绑定。禁止在未诊断的情况下直接修改绑定来绕过失败。
 2. **原子队列**：先创建 `todo.json` 并 `--todo-next` 领取 item。每个 item 必须有单一验收目标和文件范围；`--todo-id` 是运行任一步骤的必填参数。
 2b. **队列恢复**：孤儿 running item（如 session 中断遗留、无人领取）用 `--todo-recover` 归还为 pending 以便重新领取；recover **保留 `split_required` 标记**，已触发拆分的 item 恢复后仍禁止直接领取，必须 `--todo-split` 拆分子项，不能借此绕过拆分门。
-3. **递归拆分**：同一只读步骤第二次失败/超时，item 自动标记 `split_required`；必须 `--todo-split` 生成子项，不能继续放大 prompt。
+3. **递归拆分**：同一只读步骤**首次超时**或**两次非超时失败**，item 自动标记 `split_required`；必须 `--todo-split` 生成子项，不能继续放大 prompt。
 4. **顺序与完成**：队列拒绝跳步；只有 Step 1–4 均成功才可 `--todo-finish --todo-state completed`。Step 4 的新问题必须入队。
 5. **逐步汇报**：`run_cli.py` 在每次成功、失败或超时后都输出 `Harness Step Report`，并把证据写入 item 历史。禁止静默 CLI 调用。
 6. **反绕过插件**：插件阻止 `write_file`、`patch`、`skill_manage` 的直接修改及直接 `codex exec`/`kimi -p` 调用；代码只能经有证据的 Step 3 CLI 写入。
@@ -265,13 +265,13 @@ CLI execution: SSH to <host> (PowerShell转义降级 → 本地batch文件方案
 
 ### 通用规则
 1. 第一次超时 -> 精简 prompt 重试一次
-2. 第二次超时 -> 执行降级路径
-3. 在汇报中注明超时和降级
+2. 第二次超时 -> **执行拆分**（只读步骤按 §4b 拆分优先：生成子项；仅当已达最小粒度 BLOCKED_SPLIT_LIMIT，才允许显式声明降级路径）
+3. 在汇报中注明超时和处置路径
 
 ### 超时必重试规则
 **exit 124（超时）永远不是跳过步骤的理由。** 任何 CLI 调用返回 exit 124 时：
 1. 必须精简 prompt 重试一次（不可跳过重试直接进入降级）
-2. 重试仍超时后，才可进入降级路径
+2. 重试仍超时后 → 只读步骤按 §4b 先拆分（不换 CLI）；仅最小粒度壁垒 BLOCKED_SPLIT_LIMIT 后允许显式声明降级
 3. 严禁将 exit 124 视为"部分成功"或"可接受的超时"而跳过步骤
 
 ### Step 1 超时
@@ -300,7 +300,12 @@ CLI execution: SSH to <host> (PowerShell转义降级 → 本地batch文件方案
 
 - 强制用英文简短提示
 
-### 降级路径必须声明
+### 只读步骤降级红线（与 §4b 拆分优先联动）
+- step1 / step2 / step4 是只读步骤，**不设「换 CLI」降级路径**。其失败/超时处置只有两条：一次精简重试 → 拆分（见 core-logic §4b）。
+- 唯一允许换 CLI 出口：拆分已达最小粒度壁垒（BLOCKED_SPLIT_LIMIT）仍失败，或该步绑定后端不可用（command not found / 认证 401）且已无可拆分单元——此时仍必须走 `--authorize-binding-change` 显式授权并声明，不得静默改绑。
+- step4 维持「不切换其他 CLI」（见下方 Step 4 超时）不变。
+
+### 降级路径必须声明  <!-- anchor: declared-fallback -->
 CLI 失败后（包括认证错误、HTTP 403），必须先明确声明降级路径才能继续：
 1. 重试同一 CLI → 说明重试原因
 2. 降级到指定替代 CLI → 说明哪个 CLI + 只读控制
@@ -366,7 +371,7 @@ Self-audit correction exception: <发现的问题>; files in scope: <文件范�
 **验证失败的处理**：
 - 验证未通过，不能在汇报中声称该步骤"完成"
 - 必须记录验证失败的具体原因
-- 验证失败等同于 CLI 失败，走降级/重试路径
+- 验证失败等同于 CLI 失败，按 §4b 处置：只读步骤先拆分；仅最小粒度壁垒后例外
 
 ### 防虚假成功规则
 
@@ -385,25 +390,25 @@ Step 2 complete ✅（11 点修复方案）
 Step 2: CLI timed out (exit 124, empty output)
 → 精简 prompt 重试
 → 第二次仍超时
-→ 降级到本地验证
+→ 只读步骤按 §4b 拆分（生成子项，不换 CLI）
 ```
 
 ## Failure Classification Matrix
 
 | 失败类型 | 判断依据 | 是否可重试 | 是否可降级 | 是否终止流程 |
 |---------|---------|-----------|-----------|------------|
-| **超时** | exit 124 或 timeout 异常 | 是（精简 prompt 重试 1 次） | 是（降级路径） | 否（2 次后才终止） |
-| **空输出** | exit 0 但 stdout 为空 | 是（重试 1 次） | 是（降级路径） | 否（2 次后才终止） |
+| **超时** | exit 124 或 timeout 异常 | 是（精简 prompt 重试 1 次） | 否（只读步骤先拆分；仅最小粒度壁垒后例外） | 否（2 次后才终止） |
+| **空输出** | exit 0 但 stdout 为空 | 是（重试 1 次） | 否（只读步骤见 §4b 拆分优先；非只读步骤可降级） | 否（2 次后才终止） |
 | **认证失败** | HTTP 401/403、auth error | 否（直接降级） | 是（换 CLI） | 如果所有 CLI 都认证失败 |
 | **可执行文件失败** | EFTYPE、command not found、Missing dependency | 是（修复后重试） | 是（降级路径） | 如果修复也失败 |
-| **无效输出** | 输出存在但内容不相关（如帮助信息、错误日志） | 是（精简 prompt 重试） | 是（降级路径） | 否（2 次后才终止） |
+| **无效输出** | 输出存在但内容不相关（如帮助信息、错误日志） | 是（精简 prompt 重试） | 否（只读步骤见 §4b 拆分优先；非只读步骤可降级） | 否（2 次后才终止） |
 
 ### 失败必须分类规则
 **任何 CLI 失败在采取行动前，必须先通过 Failure Classification Matrix 进行分类。** 禁止在未分类失败类型的情况下直接重试、降级或终止。分类结果决定后续路径（是否可重试、是否可降级、是否终止），不得跳过分类步骤。
 
 **重试规则**：
 - 同一失败类型最多重试 1 次
-- 重试后仍属于同一失败类型 → 切换到降级路径
+- 重试后仍属于同一失败类型 → 只读步骤按 §4b 拆分；非只读步骤才走降级
 - 降级后仍失败 → 打开 circuit breaker（见下一节）
 
 **跨步骤失败累计**：如果累计 3 个步骤都因超时/空输出/无效输出失败，整体流程必须终止，终端状态为 `BLOCKED_CLI_FAILURE`。
@@ -413,7 +418,7 @@ Step 2: CLI timed out (exit 124, empty output)
 ### 单 CLI 熔断
 当同一步骤的同一 CLI 连续 2 次发生**相同的失败类型**（都是超时，或都是空输出），则打开该 CLI 的 circuit breaker：
 - 不再重试该 CLI 命令
-- 必须切换到降级路径（不同 CLI 或不同执行方式）
+- 只读步骤先按 §4b 拆分；仅最小粒度壁垒后才允许显式声明降级（非只读步骤才直接切换）
 - 如果降级路径也失败，则打开步骤级熔断
 
 ### 步骤级熔断
@@ -570,7 +575,7 @@ Self-audit (summary — see full 15-row audit above):
 2. **Step 3 是否使用了正确的 CLI？** → 以 binding-lock.json 绑定为准
 3. **Step 1/2 是否用了正确的 CLI？** → 以 binding-lock.json 绑定为准
 4. **所有步骤是否都调用了真实 CLI？** → 不能用 Hermes 工具（patch/write_file/terminal）代替
-5. **绑定 CLI 变更是否仅用于基础设施配置调整？** → 绑定 CLI 变更只能用于基础设施配置调整, 不得作为内容修复或 Step 产出质量修复手段. 触发绑定变更前必须先完成 Step 2→3→4 循环优化当前 agent. 违规形态包括: (a) 为修正某 agent 输出内容而切到另一 agent; (b) 因当前 agent 质量问题而临时切走; (c) 同一任务中途为绕过失败而切换绑定.
+5. **绑定 CLI 变更是否仅用于基础设施配置调整？** → 绑定 CLI 变更只能用于基础设施配置调整, 不得作为内容修复或 Step 产出质量修复手段. 触发绑定变更前必须先完成 Step 2→3→4 循环优化当前 agent. 违规形态包括: (a) 为修正某 agent 输出内容而切到另一 agent; (b) 因当前 agent 质量问题而临时切走; (c) 同一任务中途为绕过失败而切换绑定. 绑定变更仅限任务开始前的基础设施配置调整；进行中改绑将被 run_cli.py 拒绝（F-B-03）。
 6. **Step 4 复审后是否有未处理的警告？** → Step 4 指出的问题必须进入循环
 7. **是否跳过了 Step 2 或 Step 4？** → 必须完整执行 4 个步骤
 8. **是否在每一步前都声明了 CLI？** → Step 1-4 前都必须声明对应 CLI
@@ -653,7 +658,7 @@ Step 3 完成后必须立即进入 Step 4，**不得以"达到工具调用上限
 - 唯一允许中断的情况：所有 CLI 工具都不可用且已穷尽降级路径
 
 ### 拆分优化（v13.0.2 新增）
-当同一只读步骤（Step 1/2/4）第二次失败或超时，item 标记为 split_required，必须执行 --todo-split 生成子项，禁止继续放大 prompt。拆分遵循以下优化规则：
+当同一只读步骤（Step 1/2/4）**首次超时**或**两次非超时失败**，item 标记为 split_required，必须执行 --todo-split 生成子项，禁止继续放大 prompt。拆分产生的子项各自独立完成 Step 1–4；某子项 Step 4 若 `需调整`，按 Loops Mechanism 回 Step 2 迭代（见本节下方 Loops）。拆分与循环正交可叠加。拆分遵循以下优化规则：
 1. 原子性：每个子项只有一个验收目标和单一文件范围，禁止把不相关的改动塞进同一子项。
 2. 无重叠：子项之间文件范围不得重叠，避免 Step 3 写冲突与验证困难。
 3. 顺序执行：子项按创建顺序进入队列，队列拒绝跳步；每个子项独立完成 Step 1–4 后才能领取下一个。
@@ -728,6 +733,7 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.17 (2026-08-14): 拆分优先于降级 + 绑定锁技术强制（F-P-01~12 全闭环；7 个 loop；28/28 测试过）
 - v13.0.16 (2026-08-13): opencode 融合后加固（F-P-01~06）——run_step.ps1 claude 分支改 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi 三处 step4 回退 300→180（对齐 manage_binding defaultT=180）；opencode-sub 改为权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读（可写改动必须走四步闭环）；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系"交叉引用 + 调度表只读限定；SKILL 澄清 verifier 兜底废弃=废弃 CLI 备用、非废弃 opencode-sub 绑定分派。版本号 13.0.15 → 13.0.16。
 - v13.0.15 (2026-08-13): opencode 适配层绑定 fail-closed 加固——manage_binding.ps1 / run_step.ps1 受支持 agent 统一为 claude/codex/mimo/kimi/opencode-sub（去 gemini）；run_step.ps1 分派前校验 schema/locked/完整绑定/受支持 agent/step3≠step4 模型族；manage_binding.ps1 补 step1/2 受支持校验；run_codex_step4.ps1 用 `-C` 传 WorkspaceDir 给 codex exec；kimi 文档对齐（-p 位置参数 + 8191 截断）；README 安装清单补 run_step.ps1 / run_kimi_step4.ps1。版本号 13.0.14 → 13.0.15。
 - v13.0.14 (2026-08-13): opencode 编排动态分派——新增统一入口 `opencode/scripts/run_step.ps1 -Step step1..4`，读 binding-lock.json 按绑定分派到对应 runner（claude/codex/mimo/kimi），opencode-sub 绑定输出 `BINDING=opencode-sub` 信号改走对应 subagent；新增 `run_kimi_step4.ps1`（kimi 用 `-p` 位置参数传 prompt，**非 stdin**，有 8191 命令行截断风险）；step4 只读前缀裁决为允许只读核对命令（Get-Content/rg/git diff），禁止写文件/测试；run_claude_step12.ps1 修复 Start-Job 子进程 stdin UTF-8 编码 + step1/2/3 加 `--add-dir`。版本号 13.0.13 → 13.0.14。

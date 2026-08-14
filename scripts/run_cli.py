@@ -177,6 +177,23 @@ def authorize_binding_change(step: str, agent: str, authorization: str) -> dict[
         raise ValueError("Unknown step")
     if agent not in AGENT_CLI:
         raise ValueError("Unknown agent")
+    # F-B-03：绑定变更仅用于任务开始前的基础设施配置调整。
+    # 若存在进行中的任务工作区（harness-workspace/<task>/todo.json 且未完成），拒绝改绑，
+    # 防止用「改绑」绕过当前任务的失败/质量问题（v13.0.9#5）。
+    ws = Path.home() / ".hermes" / "harness-workspace"
+    if ws.is_dir():
+        for task_dir in ws.iterdir():
+            todo = task_dir / "todo.json"
+            if todo.is_file():
+                data = None
+                try:
+                    data = json.loads(todo.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+                if data and not all(x.get("state") in {"completed", "split"} for x in data.get("items", [])):
+                    raise ValueError(
+                        "绑定变更被拒绝：任务进行中不允许改绑（v13.0.9#5）。"
+                        "失败的 step 请走拆分（F-A-03）；如需按次换 agent 用 --agent-override --authorization。")
     if len(authorization.strip()) < 12:
         raise ValueError("Provide the user's explicit authorization text (at least 12 characters)")
     path = _binding_lock_path(); data = load_binding_lock(path)
@@ -189,6 +206,22 @@ def authorize_binding_change(step: str, agent: str, authorization: str) -> dict[
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
     return data
+
+
+def _log_per_run_override(task_id: str, step: str, agent: str, authorization: str) -> None:
+    """F-B-02 审计：把按次 agent 覆盖追加到 per-run 日志，不修改 binding-lock.json 持久化绑定。
+
+    F2-L2-03：路径按 task_id 落到对应任务工作区，可按任务回溯。
+    """
+    entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "task_id": task_id, "step": step, "agent": agent,
+             "authorization": authorization, "persistent": False}
+    log = Path.home() / ".hermes" / "harness-workspace" / task_id / ".per-run-overrides.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def load_config(path: Path | None = None) -> HarnessConfig:
@@ -286,10 +319,20 @@ class CliRunResult:
 
 
 def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
-            timeout_seconds: int | None = None) -> CliRunResult:
+            timeout_seconds: int | None = None,
+            agent_override: str | None = None) -> CliRunResult:
     config = load_config()
     cfg = config.step(step)
-    agent = cfg.get("agent")
+    # F-B-02：按次 agent 覆盖，仅本次调用生效，不写入持久化 binding-lock。
+    if agent_override:
+        if agent_override not in config.agents:
+            return CliRunResult(step=step, agent=agent_override, command=[], started_at="",
+                finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
+                stderr_path="", evidence_path="", output_sha256="", success=False,
+                failure_reason=f"Unknown override agent '{agent_override}'")
+        agent = agent_override
+    else:
+        agent = cfg.get("agent")
     if not agent:
         return CliRunResult(step=step, agent=agent or "", command=[], started_at="",
             finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
@@ -553,6 +596,7 @@ if __name__ == "__main__":
     p.add_argument("--show-bindings", action="store_true")
     p.add_argument("--authorize-binding-change", metavar="STEP")
     p.add_argument("--agent", metavar="AGENT")
+    p.add_argument("--agent-override", metavar="AGENT", help="按次临时覆盖本步骤 agent（须同时给 --authorization）")
     p.add_argument("--authorization", metavar="USER_TEXT")
     p.add_argument("--todo-init", metavar="TITLE")
     p.add_argument("--todo-add", metavar="ITEM_JSON")
@@ -612,6 +656,20 @@ if __name__ == "__main__":
         print(json.dumps({"success": True, "result": output}, ensure_ascii=False, indent=2)); sys.exit(0)
     if not a.step or not a.task_id or not a.todo_id or not a.workspace:
         p.error("--step, --task-id, --todo-id, --workspace required (or --show-config)")
+    # F-B-02：按次覆盖必须带用户显式授权（≥12 字符）。审计落盘时机下移到
+    # todo_begin_step 校验成功后（F2-L2-03），无效/越权调用不留下「看似合法」记录。
+    if a.agent_override:
+        if not a.authorization or len(a.authorization.strip()) < 12:
+            p.error("--agent-override 需要 --authorization（用户显式授权文本，≥12 字符）")
+        # F3-L3-03：agent 合法性在 __main__ 即校验（与 run_cli() 内 config.agents 同源，
+        # load_config() 对缺失/损坏 binding-lock 已容错返回 agents 表）。
+        # 无效 agent 立即退出：不调用 todo_begin_step、不写 per-run 审计，避免「看似合法」记录。
+        if a.agent_override not in load_config().agents:
+            print(json.dumps({"type": "harness_step_report", "success": False,
+                              "step": a.step, "todo_id": a.todo_id,
+                              "failure_reason": f"Unknown override agent '{a.agent_override}'"},
+                             ensure_ascii=False, indent=2))
+            sys.exit(1)
     ws = Path(a.workspace)
     if not ws.is_dir(): print(f"Error: {ws}", file=sys.stderr); sys.exit(1)
     if a.verify_only:
@@ -632,8 +690,12 @@ if __name__ == "__main__":
         print(json.dumps({"type": "harness_step_report", "success": False, "step": a.step,
                           "todo_id": a.todo_id, "failure_reason": str(e)}, ensure_ascii=False, indent=2))
         sys.exit(1)
+    # F2-L2-03：审计时机下移到 begin_step 成功后、run_cli 调用前。
+    if a.agent_override:
+        _log_per_run_override(a.task_id, a.step, a.agent_override, a.authorization.strip())
     try:
-        r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt, timeout_seconds=a.timeout)
+        r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt,
+                    timeout_seconds=a.timeout, agent_override=a.agent_override)
     except BaseException as e:
         # Fallback: never orphan a step as "started". If run_cli itself raises,
         # synthesize a failed result so record_step still fires and the step closes.
@@ -642,10 +704,30 @@ if __name__ == "__main__":
             stdout_path="", stderr_path="", evidence_path="", output_sha256="",
             success=False, failure_reason=f"run_cli raised: {e}")
     try:
-        queue_item = todo_record_step(a.task_id, a.todo_id, a.step, r.success, r.evidence_path)
+        # F-A-02：失败时把 failure_reason（含 'Timeout after N s'）传给队列层，
+        # 使超时可被识别（第 1 次超时即触发拆分）；成功时传 evidence_path。
+        queue_item = todo_record_step(a.task_id, a.todo_id, a.step, r.success,
+                                      r.failure_reason if not r.success else r.evidence_path)
     except BaseException:
         # A record_step failure must not mask the CLI result we already captured.
         queue_item = None
+
+    # F-A-01：拆分门触发时，若调用方已提供 children，则自动执行拆分（无需手工 --todo-split）
+    if (queue_item and queue_item.get("split_required") and not r.success
+            and bool(a.todo_children) != bool(a.todo_children_file)):
+        children_json = (Path(a.todo_children_file).read_text(encoding="utf-8")
+                         if a.todo_children_file else a.todo_children)
+        try:
+            output = todo_split(a.task_id, a.todo_id, json.loads(children_json),
+                                a.todo_reason or f"auto-split after {a.step} read-only failure")
+            print(f"\n⚠️ Auto-split executed: {len(output)} child item(s) enqueued")
+        except ValueError as e:
+            print(f"\n⚠️ Auto-split failed: {e}（请检查 --todo-children / --todo-reason）")
+    elif queue_item and queue_item.get("split_required") and not r.success:
+        print("\n⚠️ Item 触发拆分门：请提供子项并用 --todo-children + --todo-reason 自动拆分，")
+        print(f"  或手工执行: python run_cli.py --task-id {a.task_id} --todo-id {a.todo_id} "
+              f"--todo-split {a.todo_id} --todo-children <JSON> --todo-reason <原因>")
+
     enqueued = [] if a.step != "step4" else enqueue_step4_findings(a.task_id, a.todo_id, r.agent_message)
     # Print CLI invocation info for transparency
     print(f"\n{'='*60}")

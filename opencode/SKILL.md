@@ -58,7 +58,7 @@ version: 13.0.16
 - `$Step` 仅接受 step1/step2/step3；脚本按步骤注入保护前缀（step1/2 只读、step3 禁止自跑测试），step3 自动带 `--dangerously-skip-permissions`（写文件），step1/2 不带。
 - prompt 只含事实：step1=问题描述+文件路径；step2=问题清单（P 编号）；step3=F<编号> before/after 方案；禁止夹带主 agent 倾向性结论。
 - 超时默认 step1/2=120s、step3=300s（可经 harness-config.json 覆盖，见"后端绑定"节的配置说明）。
-- 失败信号：`EXIT_CODE=-3`=参数错误（修 prompt 后重跑）；`-2`=超时（看保留的部分输出判断拆分/精简）；`-1`=无 agent_message，重试一次；仍失败则记录后向用户汇报。
+- 失败信号：`EXIT_CODE=-3`=参数错误（修 prompt 后重跑）；`-2`=超时（先按 §4b 拆分优先处置：若可拆分则拆出无依赖子项重跑，拆分已达最小粒度才允许显式声明降级）；`-1`=无 agent_message，重试一次；仍失败则记录后向用户汇报。
 
 ## codex CLI 调用规范（step4 当前绑定）
 
@@ -118,7 +118,7 @@ version: 13.0.16
 
 1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置；先跑 `opencode/scripts/manage_binding.ps1 -Check` 校验绑定（lock 存在且 locked、bindings 恰好 step1..step4、step4 与 step3 不同模型族），校验失败即停止并向用户报告，不得继续后续步骤。
 2. **Step 1** prompt（问题+文件路径）写入 `.harness/<task>/step1-prompt.txt` → 调 `run_step.ps1 -Step step1` → 把分派产物（CLI runner 为 `step1/step1-output.md`；subagent 为 Task 返回）落为 `step1-problems.md`（P 编号）。零问题则终止报告。
-3. **Step 2** prompt（问题清单）写入 `.harness/<task>/step2-prompt.txt` → 调 `run_step.ps1 -Step step2` → 把分派产物落为 `step2-plan.md`（F-<P编号>）。
+3. **Step 2** prompt（问题清单）写入 `.harness/<task>/step2-prompt.txt` → 调 `run_step.ps1 -Step step2` → 把分派产物落为 `step2-plan.md`（F-<P编号>）。只读步骤超时（`EXIT_CODE=-2`）按 §4b 拆分优先：可拆则调 `run_step.ps1 -Step step1|2 -SplitOf <父项>` 拆出无依赖子工作包，拆分已达最小粒度才允许显式声明降级。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
 5. **Step 3** prompt（F 方案清单）写入 `.harness/<task>/step3-prompt.txt` → 调 `run_step.ps1 -Step step3` → 产物落为 `step3-changes.md`。执行后对比基线验无方案外改动。
 6. **Step 4** 入参 = 修改后代码绝对路径 + step1 问题清单 → 写 `step4-prompt.txt` → 调 `run_step.ps1 -Step step4` → 读取 `step4/step4-review.md`，评级 `通过`/`需调整`。
