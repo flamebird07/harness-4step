@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。"
-version: 13.0.19
+version: 13.0.20
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.19 — DeepSeek Harness 适配层)
+# Harness 4-Step Method (v13.0.20 — DeepSeek Harness 适配层)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -368,7 +368,7 @@ Self-audit correction exception: <发现的问题>; files in scope: <文件范�
 3. **退出码检查**：exit 124（超时）无论是否有部分输出，都视为失败，不得声称完成。
 4. **验证门**：
    - Step 1/2：确认输出包含审查发现或方案要点
-   - Step 3：确认 diff 或代码修改已实际写入文件
+   - Step 3：确认 diff 或代码修改已实际写入文件 **且** 验证状态达标——Step 3 产物含 `Step 3 验证状态` 块，且为（a）自动化验证 passed（附命令证据），或（b）显式 `blocked/not-run`（附原因）。仅"人工目检"不构成 Step 3 完成（shared/core-logic.md §2b）。
    - Step 4：确认复审结论包含具体问题或确认
 
 **验证失败的处理**：
@@ -496,7 +496,7 @@ Step 3 完成后，必须捕获相应的执行后状态并与基线对比：
 2. 请求的实现变更已实际存在
 3. 没有意外的破坏性变更或无关修改
 4. CLI 输出与观察到的 diff 和工作区状态一致
-5. CLI 报告的任何测试、检查或生成产物实际存在或可验证完成
+5. CLI 报告的任何测试、检查或生成产物实际存在或可验证完成；若自动化验证被权限/环境拦截，产物必须含 `Step 3 验证状态: blocked/not-run(<命令>/<原因>)`，不得以"已通过/目检"代替；未捕获该状态不得判 COMPLETED（shared/core-logic.md §2b）
 
 如果 Step 3 超时或失败后可能已修改工作区，必须在重试或降级前捕获失败后状态。
 
@@ -736,6 +736,7 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.20 (2026-08-14): Step 3 验证门（shared/core-logic.md §2b/§2c）——Step 3 产物必须含 `Step 3 验证状态` 块（passed / blocked(<命令>/<原因>) / not-run(<原因>)），验证被权限/环境拦截不得以"人工目检"自评通过；Step 4 按验证状态决定兜底只读回归；step4 只读快照强制（opencode/scripts/step4_readonly_guard.ps1，P-08 快照比对回退 / P-09 双向枚举新建文件）；违规处理新增类别 D（验证被拦截）/E（复审假通过），违规强制记录。DSH 适配层同步验证门（implementer/verifier 提示词 + 编排流程）。版本号 13.0.19 → 13.0.20。
 - v13.0.19 (2026-08-14): 新增 DeepSeek Harness (DSH) 适配层——`dsh/SKILL.md` + `dsh/agents/`（6 个 subagent 提示词模板）+ `dsh/scripts/`（manage_binding.ps1 / run_step.ps1）+ `dsh/binding-lock.json`；共享逻辑 §10 增加 DSH 行、binding-recommendation 增加 dsh-sub。DSH 默认全部步骤绑定 `dsh-sub`（DSH subagent，模型族由 `models` 字段决定，step4≠step3），可选绑定外部 CLI（复用 opencode runner）。版本号 13.0.18 → 13.0.19。
 - v13.0.17 (2026-08-14): 拆分优先于降级 + 绑定锁技术强制（F-P-01~12 全闭环；7 个 loop；28/28 测试过）
 - v13.0.16 (2026-08-13): opencode 融合后加固（F-P-01~06）——run_step.ps1 claude 分支改 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi 三处 step4 回退 300→180（对齐 manage_binding defaultT=180）；opencode-sub 改为权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读（可写改动必须走四步闭环）；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系"交叉引用 + 调度表只读限定；SKILL 澄清 verifier 兜底废弃=废弃 CLI 备用、非废弃 opencode-sub 绑定分派。版本号 13.0.15 → 13.0.16。

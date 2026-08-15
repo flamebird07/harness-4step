@@ -20,12 +20,19 @@ permission:
 
 ## 路由规则
 
-0. **Step 0 强制 Check + 唯一分派入口**：开始任何四步闭环前，必须先 bash 调 `opencode/scripts/manage_binding.ps1 -Check` 校验绑定；输出无 `BINDING_LOCK_OK`（lock 损坏/漏字段/step3≠step4 模型族冲突）即停止并向用户报告，不得继续 Step 1。四步闭环每步统一经 `opencode/scripts/run_step.ps1 -Step step<N>` 分派（读 `binding-lock.json` 取绑定，绑定=claude/codex/mimo/kimi 时脚本直调 runner；绑定=opencode-sub 输出 `BINDING=opencode-sub`+出口码 99 时主 agent 才用 Task 调对应 subagent）。`run_step.ps1` 是唯一分派入口，主 agent 不得跳过它直接调 runner 脚本。
+0. **Step 0 强制 Check + 唯一分派入口**：开始任何四步闭环前，必须先 bash 调 `opencode/scripts/manage_binding.ps1 -Check` 校验绑定；输出无 `BINDING_LOCK_OK`（lock 损坏/漏字段/step3≠step4 模型族冲突）即停止并向用户报告，不得继续 Step 1。四步闭环每步统一经 `opencode/scripts/run_step.ps1 -Step step<N>` 分派（读 `binding-lock.json` 取绑定，绑定=claude/codex/mimo/kimi 时脚本直调 runner；绑定=opencode-sub 输出 `BINDING=opencode-sub`+出口码 99 时主 agent 才用 Task 调对应 subagent）。`run_step.ps1` 是唯一分派入口，主 agent 不得跳过它直接调 runner 脚本。**留痕**：Step 3 分派前记录实际绑定路径（`manage_binding.ps1 -ShowBindings` 输出 + `run_step.ps1` 实际命中分支）到 step3 产物头部；若 step3 产物中出现 "This command requires approval"（claude CLI + `--dangerously-skip-permissions` 路径不应出现）或实际走了 opencode-sub / 主 agent 直跑 Bash，判定为绑定违规（core-logic §8-B/C），按 F-07 强制记录。
 1. **直接处理（仅只读）**：只有目标明确、影响单一文件或单一确定操作、无外部未知依赖且无需独立复核，且**操作本身是只读的（侦察/分析/查证）**时，才可直接完成。任何**可写改动（创建/修改/删除文件）必须进入下面严格四步闭环**，由实施代理经 `run_step.ps1 -Step step3` 执行——主 agent 不得直接改代码（裁判不能当运动员）。
 2. **并行发现**：只要存在两个或更多独立未知点、跨模块影响、需求歧义或故障定位，先拆成 2–4 个互不依赖的只读工作包，并行调用 `harness-explorer`。需要问题清单时，可对彼此独立的模块并行调用 `harness-auditor`。
-3. **严格修复闭环**：对同一个可写工作包，必须按 `Step0 Check → run_step.ps1 -Step step1 → step2 → step3 → step4` 的顺序运行，每条可写包都必须经 `run_step.ps1` 走 CLI；subagent 仅在绑定=opencode-sub 时作为分派目标。不得让多个实施代理改同一文件或同一逻辑区域。
+3. **严格修复闭环**：对同一个可写工作包，必须按 `Step0 Check → run_step.ps1 -Step step1 → step2 → step3 → step4` 的顺序运行，每条可写包都必须经 `run_step.ps1` 走 CLI；subagent 仅在绑定=opencode-sub 时作为分派目标。不得让多个实施代理改同一文件或同一逻辑区域。Step 3 产物必须含 `Step 3 验证状态`（core-logic §2b 验证门）；验证被拦截时按 §8-D 记录并如实传 Step 4，不得仅凭人工目检判 Step 3 完成。
 4. **并行实施边界**：只有文件归属完全不重叠、验收条件独立且主代理已写明边界时，才可并行运行多个修复包；每个包各自完成四步闭环。
 5. **回流**：复审为“需调整”时，仅将未通过的问题和复审证据送回方案阶段；保持问题编号可追溯。默认最多三轮，规则见共享逻辑。
+
+## 违规记录强制点（mandatory violation recording）
+以下情形任一命中，主 agent **必须**先调 `opencode/scripts/manage_binding.ps1 -RecordViolation -Id V-<yyyy-MM-dd>-<n> -By <责任人> -Reason <原因+证据>`，再继续后续步骤；记录是强制动作，禁止跳过或仅口头说明（shared/core-logic.md §8）：
+1. **step4 越权写文件**：`run_*_step4.ps1` 快照比对报警（F-08）→ 脚本已自动回退，主 agent 复核后记录，责任人=step4 agent
+2. **step3 验证被拦截**：step3-changes.md 的 `Step 3 验证状态` = blocked/not-run → 记录类别 validation-blocked（core-logic §8-D），责任人=step3 agent，并把验证状态原样传 Step 4
+3. **绑定违规**：未走 run_step.ps1 / 走错后端 / claude CLI 路径出现 "This command requires approval"（P-06）
+4. **跳步 / 并行违规**、**step4 假通过**（验证未完成仍判 通过，§8-E）
 
 ## 产物与权限
 

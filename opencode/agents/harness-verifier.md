@@ -23,6 +23,7 @@ permission:
 ## 任务输入
 - 第3步修改后的代码文件
 - 第1步的原始问题清单（带 P 编号）
+- **第3步验证状态**（`Step 3 验证状态` 块：passed / blocked(<命令>/<原因>) / not-run(<原因>)）——用于决定是否补跑只读回归（见 验证要求）
 
 ## 输出格式（必须严格遵循，格式定义见 shared/core-logic.md）
 
@@ -46,4 +47,6 @@ permission:
 ## 验证要求
 
 - 评级必须基于实际代码检查；能跑的回归（测试/lint/编译）尽量跑一遍
+- 是否补跑回归由 step3 验证状态决定（见 任务输入）：step3=blocked/not-run → **必须**补跑只读回归（允许命令白名单见 opencode/SKILL.md#codex-CLI-调用规范）；step3=passed → 可抽查；回归被批准门拦截时如实记 blocked，不得据此判"通过"（core-logic §2c）
 - 如果代码实际已修好但方案有瑕疵，如实反馈，不要因"方案完美"就给通过
+- **只读保障声明**：本 subagent 后端（绑定=opencode-sub）由 `permission: edit: deny` 技术强制只读；CLI 后端（codex/mimo/kimi）由 `opencode/scripts/step4_readonly_guard.ps1` 校验和快照+事后比对+自动回退强制只读（F-08）

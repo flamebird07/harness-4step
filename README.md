@@ -1,13 +1,13 @@
 # 4步法强制执行系统 (Harness 4-Step Method)
 
-> **v13.0.19** — 新增 DeepSeek Harness (DSH) 适配层；主 agent 自动读 binding-lock（解决"必须人工强化"问题）；每步 CLI 绑定由 binding-lock.json 决定（Hermes / opencode / DSH 各自持久化）。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 `shared/`。
+> **v13.0.20** — Step 3 验证门（§2b/§2c）+ step4 只读快照强制（P-08/P-09）；主 agent 自动读 binding-lock（解决"必须人工强化"问题）；每步 CLI 绑定由 binding-lock.json 决定（Hermes / opencode / DSH 各自持久化）。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 `shared/`。
 
 ## 系统组成
 
 | 组件 | 作用 |
 |------|------|
 | shared/ | **唯一逻辑源**：core-logic.md（四步法逻辑）+ binding-recommendation.md（推荐表） |
-| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.19） |
+| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.20） |
 | opencode/ | opencode 适配层：SKILL.md + 4 个 harness-* subagents + README |
 | dsh/ | DeepSeek Harness 适配层：SKILL.md + 6 个 subagent 提示词模板 + scripts |
 | plugin/ | harness-4step 技术强制执行插件 |
@@ -79,7 +79,7 @@ cp -r plugin ~/.hermes/plugins/harness-4step
 /skill harness-4step
 ```
 
-### 4. DeepSeek Harness (DSH) 安装（v13.0.19 新增）
+### 4. DeepSeek Harness (DSH) 安装（v13.0.19 新增，v13.0.20 同步验证门）
 
 ```bash
 # ① 复制 DSH skill（用户级）：
@@ -93,6 +93,7 @@ powershell -Command "& \"$HOME\.dsh\skills\harness-4step\scripts\manage_binding.
 
 ## 版本历史
 
+- v13.0.20 (2026-08-14): Step 3 验证门（shared/core-logic.md §2b/§2c）——Step 3 产物必须含验证状态（passed/blocked/not-run），验证被拦截不得自评通过；step4 只读快照强制（opencode/scripts/step4_readonly_guard.ps1，P-08/P-09）；违规处理新增类别 D（验证被拦截）/E（复审假通过），强制记录。DSH 适配层同步验证门。版本号 13.0.19 → 13.0.20。
 - v13.0.19 (2026-08-14): 新增 DeepSeek Harness (DSH) 适配层（`dsh/` 目录）；版本号 13.0.18 → 13.0.19
 - v13.0.18 (2026-08-14): 主 agent 自动读 binding-lock——orchestrator 路由规则新增 Step 0 强制 manage_binding.ps1 -Check + run_step.ps1 唯一分派入口（解决"必须人工强化"问题；2 个 loop；11/11 P 通过）
 - v13.0.17 (2026-08-14): 拆分优先于降级 + 绑定锁技术强制（F-P-01~12 全闭环；7 个 loop；28/28 测试过）。修复 10.0.0.87 Hermes 端 step1 超时未拆分 + 违规降级问题。

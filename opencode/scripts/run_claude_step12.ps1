@@ -42,7 +42,7 @@ if (-not $prompt) { Fail-Cli "Prompt file is empty" }
 $STEP_PREFIXES = @{
     step1 = "你是四步法第1步审查者：只找问题，不写方案，不改代码。输出带 P 编号的问题清单。`n"
     step2 = "你是四步法第2步方案者：只写修复方案，不改代码。每个修复对应一个 P 编号，给出 before/after。`n"
-    step3 = "IMPORTANT: This is Step 3 implementation. Implement only the approved changes and modify files as needed. You may inspect and edit files required for the implementation, but do NOT run tests, builds, dependency installation, application code, or other validation commands. Do NOT treat missing test/build/runtime tools or dependencies as evidence that the implementation failed. Report validation as not run or unverified, and do NOT claim that tests passed.`n`n"
+    step3 = "IMPORTANT: This is Step 3 implementation. Implement only the approved changes and modify files as needed. You may inspect and edit files required for the implementation. You SHOULD run read-only validation that needs no approval (e.g. git diff --check, read-only syntax/compile checks via `python -B`); you MAY run regression (e.g. pytest) if the environment permits without approval. If a validation command is blocked by permission, approval, or missing tools, do NOT treat that as implementation failure — record it in the required `## Step 3 验证状态` block as blocked(<command>/<reason>) or not-run(<reason>). NEVER claim tests passed unless you actually ran them and they passed. At the end of your reply output a `## Step 3 验证状态` section with: validation-method, syntax-check, regression, remarks.`n`n"
 }
 $prompt = $STEP_PREFIXES[$Step] + $prompt
 

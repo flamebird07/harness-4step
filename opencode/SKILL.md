@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.18
+version: 13.0.19
 ---
 
-# 四步法 Harness（opencode 适配层 v13.0.18 — Orchestrator Auto-Read Binding-Lock）
+# 四步法 Harness（opencode 适配层 v13.0.19 — Orchestrator Auto-Read Binding-Lock）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -74,8 +74,9 @@ version: 13.0.18
 ```
 
 - **连接前提**：脚本按 PATH 解析 `codex`；PATH 无 codex 时回退 `CODEX_HOME\.sandbox-bin\codex.exe`（`CODEX_HOME` 默认 `~/.ccsc/codex-mimo`，可用环境变量覆盖）。若认证失效会 401，需用户 `codex login`（或在 Codex 应用重新登录）。
-- prompt 必须包含：step1 原始问题清单（P 编号）+ 修改后文件绝对路径 + 明确要求"打开实际文件核对、只读核对（Get-Content/rg/git diff），禁止写文件/测试、逐条评级、输出总体 通过/需调整"。
-- 脚本会自动向 prompt 注入 step4 只读前缀（静态只读复审、禁止执行测试）——只读约束靠 prompt 落地（codex 沙箱为 danger-full-access，无系统级隔离），越权写文件靠 baseline.diff 事后回退。
+- **只读技术强制（P-08/P-09）**：`run_codex_step4.ps1` 已接入 `step4_readonly_guard.ps1`——step4 运行前后对受监控文件做 sha256 快照比对，越权写文件即自动回退 + 记录违规 + `EXIT_CODE=STEP4_WRITE_VIOLATION`。默认 `--sandbox danger-full-access`（本机可用的普通访问模式，不依赖只读沙箱辅助程序，保证 codex 可启动）；Layer A 只读沙箱为尽力而为加固，仅当显式传 `-Sandbox read-only` 且本机支持时启用，不支持则启动前回退 `danger-full-access` 并输出 `WARN=SANDBOX_UNAVAILABLE_FALLBACK`。只读的机械保障始终由 Layer B 快照比对承担，不依赖沙箱。
+- prompt 必须包含：step1 原始问题清单（P 编号）+ 修改后文件绝对路径 + **step3 验证状态（passed / blocked(<命令>/<原因>) / not-run(<原因>)）** + 明确要求"打开实际文件核对、只读核对（Get-Content/rg/git diff/git status），必要时补跑只读回归（判定见 F-03），禁止写文件、禁止安装依赖、逐条评级、输出总体 通过/需调整"。step3 验证状态未提供时，Step 4 按 blocked 处理（必须补跑回归）。
+- 脚本向 prompt 注入 step4 只读前缀（允许只读核对 + 验证状态非 passed 时的只读回归，禁止写文件/安装依赖；只读命令白名单见本节）。只读的机械保障由 `opencode/scripts/step4_readonly_guard.ps1` 提供（F-08）：step4 前后对受监控文件做 sha256 快照比对，越权写文件即自动回退 + 记录违规 + 以 EXIT_CODE=STEP4_WRITE_VIOLATION 失败，不再仅靠 prompt。
 - 传给 codex 的 prompt 只含事实（问题 + 文件路径），不含主 agent 的倾向性结论。
 - 若输出含 `NO agent_message` 或 `EXIT_CODE=-1`，重试一次；仍失败则记录后向用户汇报。
 
@@ -120,8 +121,9 @@ version: 13.0.18
 2. **Step 1** prompt（问题+文件路径）写入 `.harness/<task>/step1-prompt.txt` → 调 `run_step.ps1 -Step step1` → 把分派产物（CLI runner 为 `step1/step1-output.md`；subagent 为 Task 返回）落为 `step1-problems.md`（P 编号）。零问题则终止报告。
 3. **Step 2** prompt（问题清单）写入 `.harness/<task>/step2-prompt.txt` → 调 `run_step.ps1 -Step step2` → 把分派产物落为 `step2-plan.md`（F-<P编号>）。只读步骤超时（`EXIT_CODE=-2`）按 §4b 拆分优先：可拆则调 `run_step.ps1 -Step step1|2 -SplitOf <父项>` 拆出无依赖子工作包，拆分已达最小粒度才允许显式声明降级。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
-5. **Step 3** prompt（F 方案清单）写入 `.harness/<task>/step3-prompt.txt` → 调 `run_step.ps1 -Step step3` → 产物落为 `step3-changes.md`。执行后对比基线验无方案外改动。
-6. **Step 4** 入参 = 修改后代码绝对路径 + step1 问题清单 → 写 `step4-prompt.txt` → 调 `run_step.ps1 -Step step4` → 读取 `step4/step4-review.md`，评级 `通过`/`需调整`。
+5. **Step 3** prompt（F 方案清单）写入 `.harness/<task>/step3-prompt.txt` → 调 `run_step.ps1 -Step step3` → 产物落为 `step3-changes.md`。执行后对比基线验无方案外改动。**验证门**：读取 step3 产物末尾 `Step 3 验证状态`；为 `blocked/not-run` 时按 core-logic §8-D 类别调 `manage_binding.ps1 -RecordViolation` 记录，并把验证状态原样写入 Step 4 prompt；不得仅凭人工目检判 Step 3 完成。
+- Step 3 产物头部记录 `实际执行路径`（run_step.ps1 → run_claude_step12.ps1 / approval 提示原文），供事后核实绑定是否被绕过（P-06 留痕）。
+6. **Step 4** 入参 = 修改后代码绝对路径 + step1 问题清单 + **step3 验证状态（取自 step3-changes.md 的 `Step 3 验证状态`）** → 写 `step4-prompt.txt` → 调 `run_step.ps1 -Step step4` → 读取 `step4/step4-review.md`，评级 `通过`/`需调整`。step3 验证状态为 blocked/not-run 时，prompt 明确要求 Step 4 补跑只读回归（F-03 判定）。
 7. **循环**：`需调整` → 回 Step 2（只处理未通过的 P + 新阻塞；入参加挂上轮复审）。Step 1 只做一次。上限默认 3 次（可配置到 10，见 shared/core-logic.md §6），超限汇报未解决问题。
 
 ## 硬性规则（主 agent）
@@ -129,6 +131,8 @@ version: 13.0.18
 - 同一修复包内每步等上一 subagent 返回后才进下一步；不可跳步。独立的只读侦察、审查包和文件范围不重叠的完整修复包可以并行
 - 主 agent 不得自己分析根因、写方案、改代码
 - 传参只传原始问题/产物，禁止夹带倾向性结论
+- 任何违规（step4 越权写文件 / step3 验证被拦截 / 绑定违规 / 跳步并行 / step4 假通过）必须先调 `manage_binding.ps1 -RecordViolation` 记录再继续，不得仅口头说明（触发点清单见 harness-orchestrator#违规记录强制点）
+- Step 3 产物必须含 `Step 3 验证状态`；验证被拦截按 core-logic §8-D 记录并如实传给 Step 4（§2b 验证门）
 - Step 3 完成后必须立即进入 Step 4，不得中途停下汇报当"完成"
 
 ## 违规处理
@@ -139,6 +143,7 @@ version: 13.0.18
 
 ## 版本历史
 
+- v13.0.19 (2026-08-14): Step 3 验证门 + step4 只读快照强制——run_codex_step4.ps1 接入 step4_readonly_guard.ps1（P-08 快照比对回退 / P-09 双向枚举新建文件，越权写文件自动回退 + 记录违规 + EXIT_CODE=STEP4_WRITE_VIOLATION）；codex 沙箱 Layer A 尽力而为（-Sandbox read-only 仅本机支持时启用，否则回退 danger-full-access 并输出 WARN=SANDBOX_UNAVAILABLE_FALLBACK）；mimo/kimi step4 同步接入快照守卫；Step 4 prompt 新增 step3 验证状态输入；验证门与违规类别 D/E 对齐 shared/core-logic.md §2b/§2c/§8。版本号 13.0.18 → 13.0.19。
 - v13.0.18 (2026-08-14): 主 agent 自动读 binding-lock——orchestrator 路由规则新增 Step 0 强制 manage_binding.ps1 -Check + run_step.ps1 唯一分派入口；"备用后端"改"开/关可配置"默认关闭（11/11 P 通过）。版本号 13.0.17 → 13.0.18。
 - v13.0.17 (2026-08-14): 拆分优先 + binding-lock 技术强制——与顶层 v13.0.17 同步；orchestrator 路由规则纳入 run_step.ps1 唯一分派入口 + Step 0 强制 manage_binding.ps1 -Check（F-B-01/F-B-06）；角色映射"备用后端"改"开/关可配置"（F-B-04）。版本号 13.0.16 → 13.0.17。
 - v13.0.16 (2026-08-13): 融合后加固——run_step.ps1 claude 分支 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi step4 回退 300→180；opencode-sub 改权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系" + 调度表只读限定；verifier 兜底措辞澄清。版本号 13.0.15 → 13.0.16。
