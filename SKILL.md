@@ -1,7 +1,7 @@
 ---
 name: harness-4step
-description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode，共享逻辑在 shared/ 目录。"
-version: 13.0.18
+description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。"
+version: 13.0.19
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.18 — Orchestrator Auto-Read Binding-Lock)
+# Harness 4-Step Method (v13.0.19 — DeepSeek Harness 适配层)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -105,18 +105,19 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 
 **Role label != Execution.** Real CLI execution requires calling the actual tool binary — run_cli.py (bindings decided by binding-lock.json). No delegating the task to a subagent and calling that "CLI execution." This skill harnesses the structured workflow to prevent process violations.
 
-## 跨平台架构（v13.0.12 新增）
+## 跨平台架构（v13.0.12 新增；v13.0.19 加入 DSH）
 
-四步法是一个**单一项目**（GitHub: `flamebird07/harness-4step`），同时兼容 Hermes 与 opencode：
+四步法是一个**单一项目**（GitHub: `flamebird07/harness-4step`），同时兼容 Hermes、opencode 与 DeepSeek Harness (DSH)：
 
-- **共享核心**：四步法逻辑、编号追溯、绑定语义、循环、基线、违规处理 = 平台无关，唯一逻辑源在 `shared/core-logic.md`。**任何逻辑优化只改该文件一次，双平台同步生效**，禁止在各适配层复制逻辑实现。
+- **共享核心**：四步法逻辑、编号追溯、绑定语义、循环、基线、违规处理 = 平台无关，唯一逻辑源在 `shared/core-logic.md`。**任何逻辑优化只改该文件一次，三平台同步生效**，禁止在各适配层复制逻辑实现。
 - **适配层各司其职**：平台差异（CLI 调用方式、subagent 权限、队列机制、超时/熔断等）只写在各平台的适配层。
   - Hermes 适配层：本 `SKILL.md` + `scripts/run_cli.py` + `binding-lock.json` + `plugin/`（本文件即 Hermes 侧）
   - opencode 适配层：`opencode/` 目录（`opencode/SKILL.md` + `opencode/agents/harness-*.md`）
-- **后端绑定**：每个 Step 可绑定 CLI 或宿主内 subagent，绑定语义见 `shared/core-logic.md` §4；按步骤特性推荐见 `shared/binding-recommendation.md`。本 Hermes 侧沿用 `binding-lock.json` 作为唯一绑定来源（每步一个外部 CLI）；opencode 侧默认 CLI 绑定（step1/2/3=claude、step4=codex，由 `opencode/binding-lock.json` 决定），subagent 仅当绑定=opencode-sub 时经 `run_step.ps1` 分派（与 `opencode/SKILL.md#后端绑定` 一致）。
+  - DSH 适配层：`dsh/` 目录（`dsh/SKILL.md` + `dsh/agents/harness-*.md` 提示词模板 + `dsh/scripts/`）
+- **后端绑定**：每个 Step 可绑定 CLI 或宿主内 subagent，绑定语义见 `shared/core-logic.md` §4；按步骤特性推荐见 `shared/binding-recommendation.md`。本 Hermes 侧沿用 `binding-lock.json` 作为唯一绑定来源（每步一个外部 CLI）；opencode 侧默认 CLI 绑定（step1/2/3=claude、step4=codex，由 `opencode/binding-lock.json` 决定）；DSH 侧默认全部绑定 `dsh-sub`（DSH subagent，由 `dsh/binding-lock.json` 的 `models` 决定模型族，step4≠step3），subagent 仅当绑定=dsh-sub 时经 `run_step.ps1` 输出信号后由主 agent 用 `subagent` 工具调度（与 `dsh/SKILL.md#后端绑定` 一致）。
 - **合并说明**：旧的 `four-step-harness`（Hermes skills 内的简化旧版）已废弃，其内容并入本项目的 `shared/` + 适配层，不存在第二套逻辑。
 
-任何平台若发现共享逻辑有缺陷，修正必须在 `shared/core-logic.md`，并同步更新两侧适配层引用说明（如新增步骤、变更编号规则、改循环上限）。
+任何平台若发现共享逻辑有缺陷，修正必须在 `shared/core-logic.md`，并同步更新各适配层引用说明（如新增步骤、变更编号规则、改循环上限）。
 
 ## The 4-Step Method
 
@@ -129,7 +130,7 @@ Harnesses the 4-step method with real CLI execution. v12.3.0 adds: result verifi
 | Step 3 | 由 binding-lock.json 决定 | `run_cli.py --step step3` | 300s | 按已批准方案实施 | 不能做方案/审查 |
 | Step 4 | 由 binding-lock.json 决定 | `run_cli.py --step step4` | 180s | 一次精简重试，再拆分（不换 CLI） | 不能改代码 |
 
-> **注记**：本表 Real CLI 列为 **Hermes 适配层** 工具；**opencode 适配层** 各步统一经 `opencode/scripts/run_step.ps1 -Step step<N>`（绑定由 binding-lock.json 决定），`run_cli.py` 仅 Hermes 侧使用。
+> **注记**：本表 Real CLI 列为 **Hermes 适配层** 工具；**opencode 适配层** 各步统一经 `opencode/scripts/run_step.ps1 -Step step<N>`（绑定由 binding-lock.json 决定）；**DSH 适配层** 各步统一经 `dsh/scripts/run_step.ps1 -Step step<N>`（绑定由 `~/.dsh/harness/binding-lock.json` 决定，默认 dsh-sub 经 `subagent` 工具调度），`run_cli.py` 仅 Hermes 侧使用。
 
 ## Step 1 版本号一致性审查（v13.0.5 新增）
 
@@ -735,6 +736,7 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.19 (2026-08-14): 新增 DeepSeek Harness (DSH) 适配层——`dsh/SKILL.md` + `dsh/agents/`（6 个 subagent 提示词模板）+ `dsh/scripts/`（manage_binding.ps1 / run_step.ps1）+ `dsh/binding-lock.json`；共享逻辑 §10 增加 DSH 行、binding-recommendation 增加 dsh-sub。DSH 默认全部步骤绑定 `dsh-sub`（DSH subagent，模型族由 `models` 字段决定，step4≠step3），可选绑定外部 CLI（复用 opencode runner）。版本号 13.0.18 → 13.0.19。
 - v13.0.17 (2026-08-14): 拆分优先于降级 + 绑定锁技术强制（F-P-01~12 全闭环；7 个 loop；28/28 测试过）
 - v13.0.16 (2026-08-13): opencode 融合后加固（F-P-01~06）——run_step.ps1 claude 分支改 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi 三处 step4 回退 300→180（对齐 manage_binding defaultT=180）；opencode-sub 改为权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读（可写改动必须走四步闭环）；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系"交叉引用 + 调度表只读限定；SKILL 澄清 verifier 兜底废弃=废弃 CLI 备用、非废弃 opencode-sub 绑定分派。版本号 13.0.15 → 13.0.16。
 - v13.0.15 (2026-08-13): opencode 适配层绑定 fail-closed 加固——manage_binding.ps1 / run_step.ps1 受支持 agent 统一为 claude/codex/mimo/kimi/opencode-sub（去 gemini）；run_step.ps1 分派前校验 schema/locked/完整绑定/受支持 agent/step3≠step4 模型族；manage_binding.ps1 补 step1/2 受支持校验；run_codex_step4.ps1 用 `-C` 传 WorkspaceDir 给 codex exec；kimi 文档对齐（-p 位置参数 + 8191 截断）；README 安装清单补 run_step.ps1 / run_kimi_step4.ps1。版本号 13.0.14 → 13.0.15。

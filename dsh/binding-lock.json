@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "locked": true,
+  "bindings": {
+    "step1": "dsh-sub",
+    "step2": "dsh-sub",
+    "step3": "dsh-sub",
+    "step4": "dsh-sub"
+  },
+  "models": {
+    "step1": { "family": "deepseek", "model": "" },
+    "step2": { "family": "deepseek", "model": "" },
+    "step3": { "family": "deepseek", "model": "" },
+    "step4": { "family": "other", "model": "" }
+  },
+  "authorization_log": [
+    {
+      "at": "2026-08-14T00:00:00+08:00",
+      "step": "bootstrap",
+      "agent": "step1/2/3/4=dsh-sub",
+      "authorization": "用户显式授权：DSH 适配层默认全部步骤使用 DSH subagent（step3 与 step4 必须不同模型族，通过 models 配置满足）"
+    }
+  ]
+}

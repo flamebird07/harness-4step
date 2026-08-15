@@ -9,3 +9,5 @@ baseline.diff
 backup/
 # opencode 绑定锁模板需要入库（用户本机副本在 ~/.config/opencode/harness/，不进仓库）
 !opencode/binding-lock.json
+# DSH 绑定锁模板需要入库（用户本机副本在 ~/.dsh/harness/，不进仓库）
+!dsh/binding-lock.json

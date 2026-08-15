@@ -1,6 +1,6 @@
 # Harness 4-Step Method — 共享核心逻辑（平台无关）
 
-> 本文件是四步法**唯一逻辑源**。Hermes 与 opencode 两个平台都引用本文件，任何逻辑优化只在这里改一次，双平台同步生效。
+> 本文件是四步法**唯一逻辑源**。Hermes、opencode 与 DeepSeek Harness (DSH) 三个平台都引用本文件，任何逻辑优化只在这里改一次，各平台同步生效。
 > 平台差异（CLI 调用方式、subagent 权限、队列、超时处理等）不写在这里，写在各平台的适配层。
 
 ## 1. 核心原则
@@ -90,10 +90,11 @@
 
 ## 10. 平台适配层职责
 
-| 能力 | Hermes 适配层 | opencode 适配层 |
-|------|--------------|-----------------|
-| 执行后端 | `run_cli.py` + `binding-lock.json` | bash 调 CLI（绑定由 `binding-lock.json` + `manage_binding.ps1` 管理）+ `task` 调度 subagent（备用） |
-| 配置 | `~/.hermes/binding-lock.json` + `harness-config.yaml` | `opencode/binding-lock.json`（模板）+ `harness-config` + `opencode/SKILL.md` |
-| 反绕过 | `plugin/`（four-step-enforcer 插件） | 绑定 CLI：prompt 只读前缀 + 统一经 `scripts/` 脚本调用 + 事后基线回退；绑定 opencode-sub：subagent `permission: edit: deny` |
+| 能力 | Hermes 适配层 | opencode 适配层 | DeepSeek Harness (DSH) 适配层 |
+|------|--------------|-----------------|------------------------------|
+| 执行后端 | `run_cli.py` + `binding-lock.json` | bash 调 CLI（绑定由 `binding-lock.json` + `manage_binding.ps1` 管理）+ `task` 调度 subagent（备用） | DSH `subagent` 工具为主（`dsh-sub`，经 `run_step.ps1` 输出信号后由主 agent 调度）+ 可选 CLI（复用 opencode runner，经 pwsh） |
+| 配置 | `~/.hermes/binding-lock.json` + `harness-config.yaml` | `opencode/binding-lock.json`（模板）+ `harness-config` + `opencode/SKILL.md` | `~/.dsh/harness/binding-lock.json`（模板 `dsh/binding-lock.json`）+ `harness-config` + `dsh/SKILL.md` |
+| 反绕过 | `plugin/`（four-step-enforcer 插件） | 绑定 CLI：prompt 只读前缀 + 统一经 `scripts/` 脚本调用 + 事后基线回退；绑定 opencode-sub：subagent `permission: edit: deny` | 绑定 dsh-sub：提示词强制只读（DSH 无权限字段）+ 统一经 `run_step.ps1` 分派 + 事后 `git diff > baseline.diff` 回退 |
+| 模型族 | CLI 侧配置 | CLI 侧配置 / opencode-sub 固定族 | `dsh/binding-lock.json` 的 `models` 字段决定 dsh-sub 的族；step4≠step3 必须不同族（`manage_binding.ps1 -Check` 强制） |
 
 任何平台**不得在本文件之外**复制逻辑实现；适配层只实现调用，不重新发明逻辑。

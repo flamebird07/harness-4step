@@ -1,14 +1,15 @@
 # 4步法强制执行系统 (Harness 4-Step Method)
 
-> **v13.0.18** — 主 agent 自动读 binding-lock（解决"必须人工强化"问题）；每步 CLI 绑定由 binding-lock.json 决定（Hermes 与 opencode 各自持久化）。单一项目兼容 Hermes/opencode，共享逻辑在 `shared/`。
+> **v13.0.19** — 新增 DeepSeek Harness (DSH) 适配层；主 agent 自动读 binding-lock（解决"必须人工强化"问题）；每步 CLI 绑定由 binding-lock.json 决定（Hermes / opencode / DSH 各自持久化）。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 `shared/`。
 
 ## 系统组成
 
 | 组件 | 作用 |
 |------|------|
 | shared/ | **唯一逻辑源**：core-logic.md（四步法逻辑）+ binding-recommendation.md（推荐表） |
-| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.18） |
+| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.19） |
 | opencode/ | opencode 适配层：SKILL.md + 4 个 harness-* subagents + README |
+| dsh/ | DeepSeek Harness 适配层：SKILL.md + 6 个 subagent 提示词模板 + scripts |
 | plugin/ | harness-4step 技术强制执行插件 |
 | references/ | 参考文档（CLI 语法、故障诊断、会话取证） |
 | scripts/ | 工具脚本 |
@@ -22,7 +23,9 @@
 | Kimi Code | `kimi -p` | plain | 无 | `-p` 参数不读 stdin，必须 use_stdin=false |
 | Mimo Code | `mimo run --print-logs -m xiaomi/mimo-v2.5-pro` | plain | 无 | step3 prompt 加保护前缀（避免自跑测试） |
 
-绑定由 `~/.hermes/binding-lock.json` 决定，变更需 `--authorize-binding-change` 授权。
+绑定由 `~/.hermes/binding-lock.json`（Hermes）决定，变更需 `--authorize-binding-change` 授权。opencode 与 DSH 侧绑定路径见各自 README（`opencode/README.md`、`dsh/README.md`）。
+
+> **DSH 适配层默认不绑定外部 CLI**，而是用 DSH 自带的 `subagent` 工具（后端标识 `dsh-sub`，每步一个独立 subagent，模型族由 `dsh/binding-lock.json` 的 `models` 配置决定）。上述 CLI 可作为 DSH 的可选绑定（用户显式授权后经 pwsh 调用）。
 
 ## 4步法流程
 
@@ -76,8 +79,21 @@ cp -r plugin ~/.hermes/plugins/harness-4step
 /skill harness-4step
 ```
 
+### 4. DeepSeek Harness (DSH) 安装（v13.0.19 新增）
+
+```bash
+# ① 复制 DSH skill（用户级）：
+cp -r dsh ~/.dsh/skills/harness-4step
+# ② 同步绑定锁并校验（PowerShell）：
+powershell -Command "& \"$HOME\.dsh\skills\harness-4step\scripts\manage_binding.ps1\" -InstallFromRepo; & \"$HOME\.dsh\skills\harness-4step\scripts\manage_binding.ps1\" -Check"
+# ③ 编辑本机 ~/.dsh/harness/binding-lock.json 的 models，确保 step4 与 step3 不同模型族
+```
+
+完整安装与使用见 `dsh/README.md`。
+
 ## 版本历史
 
+- v13.0.19 (2026-08-14): 新增 DeepSeek Harness (DSH) 适配层（`dsh/` 目录）；版本号 13.0.18 → 13.0.19
 - v13.0.18 (2026-08-14): 主 agent 自动读 binding-lock——orchestrator 路由规则新增 Step 0 强制 manage_binding.ps1 -Check + run_step.ps1 唯一分派入口（解决"必须人工强化"问题；2 个 loop；11/11 P 通过）
 - v13.0.17 (2026-08-14): 拆分优先于降级 + 绑定锁技术强制（F-P-01~12 全闭环；7 个 loop；28/28 测试过）。修复 10.0.0.87 Hermes 端 step1 超时未拆分 + 违规降级问题。
 - v13.0.16 (2026-08-13): opencode 融合后加固：run_step.ps1 claude 分支 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi step4 回退 300→180；opencode-sub 改权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系" + 调度表只读限定；verifier 兜底措辞澄清。版本号 13.0.15 → 13.0.16。

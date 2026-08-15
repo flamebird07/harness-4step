@@ -1,6 +1,6 @@
 # opencode 适配层（Harness 4-Step Method）
 
-单一项目 `flamebird07/harness-4step`，同时兼容 Hermes 与 opencode。本目录是 opencode 侧实现。
+单一项目 `flamebird07/harness-4step`，同时兼容 Hermes、opencode 与 DeepSeek Harness (DSH)。本目录是 opencode 侧实现。
 
 ## 架构
 
@@ -10,15 +10,16 @@ harness-4step/            # GitHub 仓库（同一仓库）
 │   ├── core-logic.md     #   四步法逻辑/编号/绑定/循环/基线/违规
 │   └── binding-recommendation.md  # 按步骤特性推荐后端
 ├── SKILL.md              # Hermes 适配层（run_cli.py + binding-lock.json）
-└── opencode/             # opencode 适配层（本目录）
-    ├── SKILL.md          #   编排规则
-    ├── agents/           #   1 个主编排 agent + 5 个权限隔离的 subagent
-    ├── opencode.json     #   动态编排项目配置模板
-    ├── DYNAMIC-DELEGATION.md # 动态拆分与并行边界
-    └── README.md
+├── opencode/             # opencode 适配层（本目录）
+│   ├── SKILL.md          #   编排规则
+│   ├── agents/           #   1 个主编排 agent + 5 个权限隔离的 subagent
+│   ├── opencode.json     #   动态编排项目配置模板
+│   ├── DYNAMIC-DELEGATION.md # 动态拆分与并行边界
+│   └── README.md
+└── dsh/                  # DeepSeek Harness 适配层（dsh/SKILL.md + agents + scripts）
 ```
 
-**规则**：逻辑优化只改 `shared/` 一次，两侧适配层只更新引用；平台细节（CLI 调用、subagent 权限、队列）各自独立进化。
+**规则**：逻辑优化只改 `shared/` 一次，各适配层只更新引用；平台细节（CLI 调用、subagent 权限、队列）各自独立进化。
 
 ## 安装到 opencode
 
@@ -90,5 +91,5 @@ harness-4step/            # GitHub 仓库（同一仓库）
 
 ## 维护
 
-- `shared/` 变更 → 双平台自动同步（各自引用）
+- `shared/` 变更 → 各平台自动同步（各自引用）
 - opencode 适配层变更 → 只影响 opencode；Hermes 侧不受影响
