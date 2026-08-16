@@ -79,7 +79,7 @@ cp -r plugin ~/.hermes/plugins/harness-4step
 /skill harness-4step
 ```
 
-### 4. DeepSeek Harness (DSH) 安装（v13.0.19 新增，v13.0.20 同步验证门）
+### 4. DeepSeek Harness (DSH) 安装（v13.0.19 新增，v13.0.20 同步验证门，v13.0.21 加独立视觉审查）
 
 ```bash
 # ① 复制 DSH skill（用户级）：

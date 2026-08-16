@@ -13,8 +13,8 @@ harness-4step/            # GitHub 仓库（同一仓库）
 ├── opencode/             # opencode 适配层
 └── dsh/                  # DeepSeek Harness 适配层（本目录）
     ├── SKILL.md          #   DSH 编排规则（主交付物，安装为 DSH skill）
-    ├── agents/           #   6 个 subagent 提示词模板（orchestrator/explorer/auditor/planner/implementer/verifier）
-    ├── scripts/          #   manage_binding.ps1（绑定管理）+ run_step.ps1（统一分派入口）
+    ├── agents/           #   subagent 提示词模板（orchestrator/explorer/auditor/planner/implementer/verifier + vision-reviewer 独立视觉审查）
+    ├── scripts/          #   manage_binding.ps1（绑定管理）+ run_step.ps1（统一分派入口）+ run_vision_review.ps1（独立视觉审查）
     ├── binding-lock.json #   绑定锁模板（默认 step1/2/3/4=dsh-sub）
     ├── DYNAMIC-DELEGATION.md # 动态拆分与并行边界（DSH 版）
     └── README.md
@@ -73,6 +73,21 @@ harness-4step/            # GitHub 仓库（同一仓库）
 在 DSH 会话中加载技能（`skill` 工具加载 `harness-4step`），然后按 `dsh/SKILL.md#编排流程` 执行。主 agent 用 `subagent` 工具调度每一步。
 
 > 注意：四步法必须在仓库根目录作为 DSH 工作区打开（方式 A），或设置 `HARNESS_SHARED_DIR`（方式 B），subagent 才能在运行时通过 read 工具拿到 `shared/core-logic.md` 内容。两者都没有时，subagent 会提示调度者，不会凭空臆造共享逻辑。
+
+## 独立视觉审查（不属于四步法）
+
+主模型（如 deepseek-v4-flash）无视觉能力时，需要"看图"（页面渲染效果、截图、before/after 对比、图片资源核对）的独立能力。**与四步法解耦，不属于任何一步**，可随时单独调用。
+
+- **机制**：主 agent → `subagent` 调 `vision-reviewer` → pwsh 调 `run_vision_review.ps1` → mimo CLI + 视觉模型（默认 `xiaomi/mimo-v2.5`）看图 → 返回结构化文本结论。
+- **脚本**：`dsh/scripts/run_vision_review.ps1`（`-ImageFiles` 必填，可多张；`-Model` 默认 `xiaomi/mimo-v2.5`；产物 `vision-review.md`）。
+- **agent 模板**：`dsh/agents/vision-reviewer.md`。
+- **前提**：本机已装并登录 mimo CLI（`references/mimo-cli-login.md`；`mimo providers whoami` 输出 Provider: MiMo）。
+- **只读保证**：只写 `.harness/vision/` 产物，不碰目标代码；视觉结论以 mimo 输出为准，打不开/超时/失败一律如实报告 `blocked`，禁止虚构。
+
+```powershell
+# 直接调用示例（也可经 vision-reviewer subagent 间接调用）
+powershell -NoProfile -Command "& '<repo>\dsh\scripts\run_vision_review.ps1' -ImageFiles '<img1>','<img2>' -Prompt '对比前后视觉差异' -WorkspaceDir '<repo>' -OutDir '<repo>\.harness\vision'"
+```
 
 ## 验证
 

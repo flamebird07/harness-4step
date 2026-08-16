@@ -1,10 +1,10 @@
 ---
 name: harness-4step
-description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.20
+description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。附带独立视觉审查能力（vision-reviewer：mimo CLI + 视觉模型看图，不属于四步法）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
+version: 13.0.21
 ---
 
-# 四步法 Harness（DeepSeek Harness 适配层 v13.0.20 — DSH subagent 为主 + CLI 可选）
+# 四步法 Harness（DeepSeek Harness 适配层 v13.0.21 — DSH subagent 为主 + CLI 可选）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 DSH 落地：把共享逻辑映射到 DeepSeek Harness 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -102,6 +102,31 @@ version: 13.0.20
 - Step 3 完成后必须立即进入 Step 4，不得中途停下汇报当"完成"
 - **Step 3 入口门禁**：任何 Step 3 操作前，必须先在用户可见消息中声明 `Step 3 implementation: dsh-sub (<模型>)` 或 CLI 名称
 
+## 独立视觉审查（不属于四步法）
+
+> 定位：**这不是四步法的一步**。四步法解决"改代码的修复闭环"；当你（主模型，如 deepseek-v4-flash）没有视觉能力、但用户需要**看图**（页面渲染效果、截图、before/after 对比、图片资源核对）时，用本能力。
+
+**机制**：主 agent 不自己看图（主模型无视觉）→ 经 `subagent` 工具调 `vision-reviewer` agent → 该 agent 经 pwsh 调 `dsh/scripts/run_vision_review.ps1` → 脚本调 mimo CLI + 视觉模型（默认 `xiaomi/mimo-v2.5`）看图 → 返回结构化文本结论。
+
+```text
+主 agent（无视觉）──subagent──> vision-reviewer ──pwsh──> run_vision_review.ps1 ──mimo -f──> mimo-v2.5（视觉）
+     ▲                                                                                          │
+     └──────────────── 返回结构化视觉结论（passed/needs-attention/blocked）──────────────────────┘
+```
+
+**使用要点（主 agent）**：
+
+- 触发：用户要求"看效果/截图/渲染图/图片资源"，或需要视觉判断时。**与四步法解耦**，可随时单独调用，也可在四步法 Step 4 之外做视觉佐证。
+- 入参：图片文件路径（截图需先用脚本生成落盘，如 Playwright 截图）+ 审查重点（可选）。
+- 产物：`.harness/vision/vision-review.md`（mimo 原始结论）+ 结构化结论。
+- 视觉模型：默认 `xiaomi/mimo-v2.5`（用户显式指定）；可换 `xiaomi/mimo-v2.5-pro`（经 `run_vision_review.ps1 -Model`）。
+- 前提：本机已装并登录 mimo CLI（见 `references/mimo-cli-login.md`；`mimo providers whoami` 应输出 Provider: MiMo）。
+- 依赖：mimo CLI 的 `-f/--file`（数组）可附加多张图片给视觉模型；`run_vision_review.ps1` 已封装。
+
+**只读保证**：`run_vision_review.ps1` 与 `vision-reviewer` 均只读（不写目标代码，只写 `.harness/vision/` 产物）。视觉结论**不得虚构**：mimo 输出是唯一事实来源，打不开/超时/失败一律如实报告 `blocked`。
+
+**视觉 agent 模板**：`dsh/agents/vision-reviewer.md`（subagent 提示词模板，含调用规范与输出格式）。
+
 ## 违规处理
 
 越权修改文件（含 step4 越权写文件）：用 `baseline.diff`/备份精确回退（step4 绑定外部 CLI 时经 `opencode/scripts/step4_readonly_guard.ps1` 快照比对自动回退，绑定 dsh-sub 时提示词强制 + 事后快照核对）→ 从违规点重走 → **强制记录**到 `docs/violations.log`（`manage_binding.ps1 -RecordViolation`，禁止仅口头说明）。违规类别 A/B/C/D/E 见 shared/core-logic.md §8。
@@ -119,5 +144,6 @@ version: 13.0.20
 
 ## 版本历史
 
+- v13.0.21 (2026-08-15): 新增**独立视觉审查能力**（不属于四步法）——`dsh/scripts/run_vision_review.ps1`（经 mimo CLI `-f` 附加多图给视觉模型 `xiaomi/mimo-v2.5` 看图，输出 `vision-review.md`）+ `dsh/agents/vision-reviewer.md`（独立 subagent 模板）。主模型无视觉时经此调用其他模型看图，与四步法解耦、可随时单独调用。版本号 13.0.20 → 13.0.21。
 - v13.0.20 (2026-08-14): 同步 shared/core-logic.md §2b/§2c Step 3 验证门——implementer 提示词新增 `Step 3 验证状态` 输出与验证要求；verifier 提示词读取 step3 验证状态并决定兜底只读回归；编排流程 Step 3/4 纳入验证门；违规处理对齐 §8 类别 A-E。版本号 13.0.19 → 13.0.20。
 - v13.0.19 (2026-08-14): 新增 DeepSeek Harness (DSH) 适配层——`dsh/SKILL.md` + `dsh/agents/`（6 个 subagent 提示词模板）+ `dsh/scripts/`（manage_binding.ps1 / run_step.ps1）+ `dsh/binding-lock.json`。默认全部步骤绑定 `dsh-sub`（DSH subagent），经 `run_step.ps1` 分派输出 `BINDING=dsh-sub` 信号后由主 agent 用 `subagent` 工具调度；可选绑定外部 CLI（claude/codex/mimo/kimi，复用 opencode/scripts runner）。模型族约束：`models` 字段决定 dsh-sub 的族，step4 必须与 step3 不同族。版本号 13.0.18 → 13.0.19。
