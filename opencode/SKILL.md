@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
-description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.19
+description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（run_vision_review.ps1：mimo CLI + 视觉模型看图，shared/core-logic.md §11）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
+version: 13.0.20
 ---
 
-# 四步法 Harness（opencode 适配层 v13.0.19 — Orchestrator Auto-Read Binding-Lock）
+# 四步法 Harness（opencode 适配层 v13.0.20 — Orchestrator Auto-Read Binding-Lock）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -107,6 +107,28 @@ version: 13.0.19
 - **传参方式**：实现为 `kimi -p <prompt> --add-dir <workspace>` **位置参数**（kimi 不支持 stdin，与 run_claude 的 stdin 管道不同，也与 run_mimo 的 `-f` 文件传参不同）。
 - **截断风险**：`-p` 命令行参数有 **8191 字符**上限，超长 prompt 会被截断。若 prompt 超长应精简（或改经 run_mimo_step4.ps1 的 `-f` 文件模式），不要在 `-p` 里塞超长文本。
 
+## 视觉审查（四步法内部视觉兜底，shared/core-logic.md §11）
+
+> 定位：**不是新步骤**，是四步法内部的**跨步视觉兜底**。当四步法某一步（step1 审截图 / step3 核对 UI 效果 / step4 对比 before-after）**需要视觉判断**、而该步绑定的后端（opencode CLI/subagent，均无视觉）**无视觉**时，经本能力看图。Hermes **自带视觉识别，不触发本机制**；opencode 与 DSH 必须支持。
+
+**调用（共享 runner，平台无关 PowerShell + mimo CLI）**：
+
+```powershell
+& "opencode\scripts\run_vision_review.ps1" `
+    -ImageFiles "<图1>","<图2>" `
+    -Prompt "<审查重点>" `
+    -WorkspaceDir "<仓库根>" `
+    -OutDir ".harness\<task>\vision"
+# 产物：vision/vision-review.md（mimo 视觉结论）；退出码 0 成功 / -2 超时 / -3 错误
+# 默认模型 xiaomi/mimo-v2.5；可 -Model 覆盖为 mimo-v2.5-pro 等
+```
+
+- **触发**：step1/step3/step4 需要视觉判断且后端无视觉时（shared/core-logic.md §11a 触发条件表）；截图/渲染图先落盘（脚本或浏览器截图生成 png）再调用。
+- **机制**：主 agent 用 bash/pwsh 调 `run_vision_review.ps1`（或绑定 opencode-sub 时经 `harness-verifier` 内嵌），mimo CLI `-f` 附加多张图给视觉模型。
+- **只读**：`run_vision_review.ps1` 只写 `.harness/<task>/vision/` 产物，不碰目标代码；视觉结论**不得虚构**（mimo 输出是唯一事实来源，失败/超时如实报告 `blocked`）。
+- **边界**：不改变绑定、不构成新步骤、不绕过 step4≠step3 模型族约束（视觉模型仅看图，不替代 step4 复审后端）；视觉结论与 step3 验证状态（§2b/§2c）是两条独立证据线（shared/core-logic.md §11c）。
+- **共享**：脚本位于 `opencode/scripts/run_vision_review.ps1`（DSH 经 `../../opencode/scripts/` 引用共用）。
+
 ## 编排流程（主 agent 用 Task 工具 + run_step.ps1 统一分派）
 
 ### 动态拆分前置规则
@@ -134,6 +156,7 @@ version: 13.0.19
 - 任何违规（step4 越权写文件 / step3 验证被拦截 / 绑定违规 / 跳步并行 / step4 假通过）必须先调 `manage_binding.ps1 -RecordViolation` 记录再继续，不得仅口头说明（触发点清单见 harness-orchestrator#违规记录强制点）
 - Step 3 产物必须含 `Step 3 验证状态`；验证被拦截按 core-logic §8-D 记录并如实传给 Step 4（§2b 验证门）
 - Step 3 完成后必须立即进入 Step 4，不得中途停下汇报当"完成"
+- 某步需要视觉判断且后端无视觉时，先经 `run_vision_review.ps1` 看图再进入/完成该步（视觉审查是内部视觉兜底，shared/core-logic.md §11；视觉结论作为该步输入佐证，不改变绑定与步骤顺序）
 
 ## 违规处理
 
@@ -143,6 +166,7 @@ version: 13.0.19
 
 ## 版本历史
 
+- v13.0.20 (2026-08-15): 视觉审查封装进四步法（shared/core-logic.md §11）——新增共享 runner `opencode/scripts/run_vision_review.ps1`（mimo CLI + 视觉模型 `xiaomi/mimo-v2.5` 看图，`-f` 附加多图，输出 `vision-review.md`）；当 step1/step3/step4 需要视觉判断且后端无视觉时触发，视觉结论作为该步输入佐证；DSH 经 `../../opencode/scripts/` 引用共用；Hermes 自带视觉不触发。版本号 13.0.19 → 13.0.20。
 - v13.0.19 (2026-08-14): Step 3 验证门 + step4 只读快照强制——run_codex_step4.ps1 接入 step4_readonly_guard.ps1（P-08 快照比对回退 / P-09 双向枚举新建文件，越权写文件自动回退 + 记录违规 + EXIT_CODE=STEP4_WRITE_VIOLATION）；codex 沙箱 Layer A 尽力而为（-Sandbox read-only 仅本机支持时启用，否则回退 danger-full-access 并输出 WARN=SANDBOX_UNAVAILABLE_FALLBACK）；mimo/kimi step4 同步接入快照守卫；Step 4 prompt 新增 step3 验证状态输入；验证门与违规类别 D/E 对齐 shared/core-logic.md §2b/§2c/§8。版本号 13.0.18 → 13.0.19。
 - v13.0.18 (2026-08-14): 主 agent 自动读 binding-lock——orchestrator 路由规则新增 Step 0 强制 manage_binding.ps1 -Check + run_step.ps1 唯一分派入口；"备用后端"改"开/关可配置"默认关闭（11/11 P 通过）。版本号 13.0.17 → 13.0.18。
 - v13.0.17 (2026-08-14): 拆分优先 + binding-lock 技术强制——与顶层 v13.0.17 同步；orchestrator 路由规则纳入 run_step.ps1 唯一分派入口 + Step 0 强制 manage_binding.ps1 -Check（F-B-01/F-B-06）；角色映射"备用后端"改"开/关可配置"（F-B-04）。版本号 13.0.16 → 13.0.17。

@@ -13,11 +13,12 @@ harness-4step/            # GitHub 仓库（同一仓库）
 ├── opencode/             # opencode 适配层
 └── dsh/                  # DeepSeek Harness 适配层（本目录）
     ├── SKILL.md          #   DSH 编排规则（主交付物，安装为 DSH skill）
-    ├── agents/           #   subagent 提示词模板（orchestrator/explorer/auditor/planner/implementer/verifier + vision-reviewer 独立视觉审查）
-    ├── scripts/          #   manage_binding.ps1（绑定管理）+ run_step.ps1（统一分派入口）+ run_vision_review.ps1（独立视觉审查）
+    ├── agents/           #   subagent 提示词模板（orchestrator/explorer/auditor/planner/implementer/verifier + vision-reviewer 视觉兜底）
+    ├── scripts/          #   manage_binding.ps1（绑定管理）+ run_step.ps1（统一分派入口）
     ├── binding-lock.json #   绑定锁模板（默认 step1/2/3/4=dsh-sub）
     ├── DYNAMIC-DELEGATION.md # 动态拆分与并行边界（DSH 版）
     └── README.md
+# 共享视觉 runner 位于 opencode/scripts/run_vision_review.ps1（DSH 与 opencode 共用，逻辑见 shared/core-logic.md §11）
 ```
 
 **规则**：逻辑优化只改 `shared/` 一次，三个适配层只更新引用；平台细节（subagent 调度、CLI 调用、权限、队列）各自独立进化。
@@ -43,6 +44,7 @@ harness-4step/            # GitHub 仓库（同一仓库）
 ~/.dsh/skills/harness-4step/scripts/        ← 复制自 dsh/scripts/（manage_binding.ps1、run_step.ps1）
 ~/.dsh/skills/harness-4step/agents/         ← 复制自 dsh/agents/
 ```
+视觉审查共享 runner `opencode/scripts/run_vision_review.ps1`（shared/core-logic.md §11）需一并复制到 scripts/（mimo CLI 需已装并登录）。
 
 **方式 B：项目级（仅该项目可用）**：把上述内容放到 `<项目根>/.dsh/skills/harness-4step/`。DSH 会按 cwd 扫描项目技能目录。
 
@@ -74,19 +76,19 @@ harness-4step/            # GitHub 仓库（同一仓库）
 
 > 注意：四步法必须在仓库根目录作为 DSH 工作区打开（方式 A），或设置 `HARNESS_SHARED_DIR`（方式 B），subagent 才能在运行时通过 read 工具拿到 `shared/core-logic.md` 内容。两者都没有时，subagent 会提示调度者，不会凭空臆造共享逻辑。
 
-## 独立视觉审查（不属于四步法）
+## 视觉审查（四步法内部视觉兜底，shared/core-logic.md §11）
 
-主模型（如 deepseek-v4-flash）无视觉能力时，需要"看图"（页面渲染效果、截图、before/after 对比、图片资源核对）的独立能力。**与四步法解耦，不属于任何一步**，可随时单独调用。
+主模型（如 deepseek-v4-flash）与四步法各步绑定后端（DSH subagent）默认无视觉时，当某步需要"看图"（step1 审截图 / step3 核对 UI 效果 / step4 对比 before-after）经本能力处理。**不是独立功能，是四步法内部的跨步视觉兜底**（不是第五步）；Hermes 自带视觉不触发，DSH 与 opencode 支持。
 
-- **机制**：主 agent → `subagent` 调 `vision-reviewer` → pwsh 调 `run_vision_review.ps1` → mimo CLI + 视觉模型（默认 `xiaomi/mimo-v2.5`）看图 → 返回结构化文本结论。
-- **脚本**：`dsh/scripts/run_vision_review.ps1`（`-ImageFiles` 必填，可多张；`-Model` 默认 `xiaomi/mimo-v2.5`；产物 `vision-review.md`）。
+- **机制**：主 agent → `subagent` 调 `vision-reviewer` → pwsh 调共享 runner `opencode/scripts/run_vision_review.ps1` → mimo CLI + 视觉模型（默认 `xiaomi/mimo-v2.5`）看图 → 返回结构化文本结论（作为该步输入佐证）。
+- **共享脚本**：`opencode/scripts/run_vision_review.ps1`（DSH 与 opencode 共用，逻辑见 shared/core-logic.md §11；`-ImageFiles` 必填，可多张；`-Model` 默认 `xiaomi/mimo-v2.5`；产物 `vision-review.md`）。从仓库根目录调用；DSH 侧经 `../../opencode/scripts/` 引用。
 - **agent 模板**：`dsh/agents/vision-reviewer.md`。
 - **前提**：本机已装并登录 mimo CLI（`references/mimo-cli-login.md`；`mimo providers whoami` 输出 Provider: MiMo）。
-- **只读保证**：只写 `.harness/vision/` 产物，不碰目标代码；视觉结论以 mimo 输出为准，打不开/超时/失败一律如实报告 `blocked`，禁止虚构。
+- **只读保证**：只写 `.harness/<task>/vision/` 产物，不碰目标代码；视觉结论以 mimo 输出为准，打不开/超时/失败一律如实报告 `blocked`，禁止虚构。
 
 ```powershell
 # 直接调用示例（也可经 vision-reviewer subagent 间接调用）
-powershell -NoProfile -Command "& '<repo>\dsh\scripts\run_vision_review.ps1' -ImageFiles '<img1>','<img2>' -Prompt '对比前后视觉差异' -WorkspaceDir '<repo>' -OutDir '<repo>\.harness\vision'"
+powershell -NoProfile -Command "& '<repo>\opencode\scripts\run_vision_review.ps1' -ImageFiles '<img1>','<img2>' -Prompt '对比前后视觉差异' -WorkspaceDir '<repo>' -OutDir '<repo>\.harness\<task>\vision'"
 ```
 
 ## 验证

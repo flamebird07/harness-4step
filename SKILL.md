@@ -1,7 +1,7 @@
 ---
 name: harness-4step
-description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。"
-version: 13.0.20
+description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
+version: 13.0.21
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.20 — DeepSeek Harness 适配层)
+# Harness 4-Step Method (v13.0.21 — DeepSeek Harness 适配层)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -736,6 +736,7 @@ When a loop returns to Step 2 after Step 4 review:
 - Each loop must increment the version number in skill updates
 
 ## Version History
+- v13.0.21 (2026-08-15): 视觉审查封装进四步法（shared/core-logic.md §11）——当 step1/step3/step4 需要视觉判断且该步后端无视觉时，经共享 runner `opencode/scripts/run_vision_review.ps1`（mimo CLI + 视觉模型 `xiaomi/mimo-v2.5`，`-f` 附加多图）看图，视觉结论作为该步输入佐证；DSH 与 opencode 适配层同步支持，Hermes 自带视觉不触发；不是新步骤、不改变绑定与 step4≠step3 约束。版本号 13.0.20 → 13.0.21。
 - v13.0.20 (2026-08-14): Step 3 验证门（shared/core-logic.md §2b/§2c）——Step 3 产物必须含 `Step 3 验证状态` 块（passed / blocked(<命令>/<原因>) / not-run(<原因>)），验证被权限/环境拦截不得以"人工目检"自评通过；Step 4 按验证状态决定兜底只读回归；step4 只读快照强制（opencode/scripts/step4_readonly_guard.ps1，P-08 快照比对回退 / P-09 双向枚举新建文件）；违规处理新增类别 D（验证被拦截）/E（复审假通过），违规强制记录。DSH 适配层同步验证门（implementer/verifier 提示词 + 编排流程）。版本号 13.0.19 → 13.0.20。
 - v13.0.19 (2026-08-14): 新增 DeepSeek Harness (DSH) 适配层——`dsh/SKILL.md` + `dsh/agents/`（6 个 subagent 提示词模板）+ `dsh/scripts/`（manage_binding.ps1 / run_step.ps1）+ `dsh/binding-lock.json`；共享逻辑 §10 增加 DSH 行、binding-recommendation 增加 dsh-sub。DSH 默认全部步骤绑定 `dsh-sub`（DSH subagent，模型族由 `models` 字段决定，step4≠step3），可选绑定外部 CLI（复用 opencode runner）。版本号 13.0.18 → 13.0.19。
 - v13.0.17 (2026-08-14): 拆分优先于降级 + 绑定锁技术强制（F-P-01~12 全闭环；7 个 loop；28/28 测试过）

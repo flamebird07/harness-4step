@@ -45,10 +45,10 @@ harness-4step/            # GitHub 仓库（同一仓库）
 2c. 复制 CLI 脚本到 skill 目录（SKILL.md 编排依赖，不可省略）：
 
    ```
-   ~/.config/opencode/skill/four-step-harness/scripts/   ← 复制自 opencode/scripts/（run_step.ps1、run_claude_step12.ps1、run_codex_step4.ps1、run_mimo_step4.ps1、run_kimi_step4.ps1、manage_binding.ps1）
+   ~/.config/opencode/skill/four-step-harness/scripts/   ← 复制自 opencode/scripts/（run_step.ps1、run_claude_step12.ps1、run_codex_step4.ps1、run_mimo_step4.ps1、run_kimi_step4.ps1、manage_binding.ps1、step4_readonly_guard.ps1、run_vision_review.ps1）
    ```
    复制后 SKILL.md 中的调用路径 `<skill 目录>\scripts\run_codex_step4.ps1` 等即可用。
-   run_step.ps1 是统一分派入口（读 binding-lock.json 调对应 runner）；run_claude_step12.ps1 是 step1/2/3（默认绑 claude CLI）的执行脚本；run_codex_step4.ps1 / run_mimo_step4.ps1 / run_kimi_step4.ps1 是 step4 及其备用。
+   run_step.ps1 是统一分派入口（读 binding-lock.json 调对应 runner）；run_claude_step12.ps1 是 step1/2/3（默认绑 claude CLI）的执行脚本；run_codex_step4.ps1 / run_mimo_step4.ps1 / run_kimi_step4.ps1 是 step4 及其备用；run_vision_review.ps1 是视觉审查共享 runner（shared/core-logic.md §11，DSH 也经它调用）。
 
 2d. 复制绑定锁到本机（绑定是本机私有配置，不上传仓库；`manage_binding.ps1` 是其唯一读写入口）：
 

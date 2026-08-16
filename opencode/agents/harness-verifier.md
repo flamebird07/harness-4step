@@ -50,3 +50,4 @@ permission:
 - 是否补跑回归由 step3 验证状态决定（见 任务输入）：step3=blocked/not-run → **必须**补跑只读回归（允许命令白名单见 opencode/SKILL.md#codex-CLI-调用规范）；step3=passed → 可抽查；回归被批准门拦截时如实记 blocked，不得据此判"通过"（core-logic §2c）
 - 如果代码实际已修好但方案有瑕疵，如实反馈，不要因"方案完美"就给通过
 - **只读保障声明**：本 subagent 后端（绑定=opencode-sub）由 `permission: edit: deny` 技术强制只读；CLI 后端（codex/mimo/kimi）由 `opencode/scripts/step4_readonly_guard.ps1` 校验和快照+事后比对+自动回退强制只读（F-08）
+- **视觉兜底（core-logic §11）**：若任务含视觉判断（UI/页面/图片资源效果，如 before/after 截图对比）且本步绑定后端无视觉，请调度者先经共享 runner `opencode/scripts/run_vision_review.ps1 -ImageFiles <before>,<after> -Prompt <审查重点>` 看图，把视觉结论并入本步证据：视觉不符 → 该问题评 `未解决`/总体 `需调整`；视觉结论是只读佐证，不虚构（mimo 输出为准，失败/超时如实报告 `blocked`）

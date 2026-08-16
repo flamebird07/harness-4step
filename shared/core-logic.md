@@ -114,5 +114,48 @@ Step 4 必须读取 Step 3 验证状态后决定是否补跑回归：
 | 配置 | `~/.hermes/binding-lock.json` + `harness-config.yaml` | `opencode/binding-lock.json`（模板）+ `harness-config` + `opencode/SKILL.md` | `~/.dsh/harness/binding-lock.json`（模板 `dsh/binding-lock.json`）+ `harness-config` + `dsh/SKILL.md` |
 | 反绕过 | `plugin/`（four-step-enforcer 插件） | 绑定 CLI：prompt 只读前缀 + 统一经 `scripts/` 脚本调用 + 事后基线回退；绑定 opencode-sub：subagent `permission: edit: deny` | 绑定 dsh-sub：提示词强制只读（DSH 无权限字段）+ 统一经 `run_step.ps1` 分派 + 事后 `git diff > baseline.diff` 回退 |
 | 模型族 | CLI 侧配置 | CLI 侧配置 / opencode-sub 固定族 | `dsh/binding-lock.json` 的 `models` 字段决定 dsh-sub 的族；step4≠step3 必须不同族（`manage_binding.ps1 -Check` 强制） |
+| 视觉审查 | **自带视觉识别，不触发**（§11） | 经共享 runner `opencode/scripts/run_vision_review.ps1`（mimo CLI + 视觉模型） | 同左（经 `../../opencode/scripts/run_vision_review.ps1`，复用共享 runner） |
 
 任何平台**不得在本文件之外**复制逻辑实现；适配层只实现调用，不重新发明逻辑。
+
+## 11. 视觉审查（四步法内部视觉兜底，不是新步骤）
+
+**定位**：视觉审查是四步法流程内部的**跨步视觉兜底能力**，用于当四步法某一步**需要视觉判断**、而该步绑定的执行工具（subagent / CLI）**不具备视觉能力**时。它**不是第五步**，不改变 step1→4 的顺序与跳步约束；视觉结论作为对应步骤的**输入佐证**，该步仍由原绑定后端执行/输出。
+
+**适用平台**：DeepSeek Harness（DSH subagent 默认无视觉）与 opencode（CLI/subagent 均无视觉）**必须支持**；Hermes **自带视觉识别，不触发本机制**。
+
+### 11a. 触发条件（满足任一即触发）
+
+某一步涉及视觉判断，且该步绑定后端无视觉：
+- **Step 1 审查**：问题涉及 UI/页面/图片资源，审查者需看截图/渲染图找视觉问题
+- **Step 3 执行**：实现完成后需确认视觉效果（如改了 CSS/布局，需看图核对是否符合方案）
+- **Step 4 复审**：需对比 before/after 截图核对视觉效果是否符合预期
+
+判定：主 agent 判断任务是否需要视觉判断；需要时先确认该步绑定后端是否具备视觉（DSH subagent / opencode CLI 均视为无视觉）→ 无视觉则触发视觉审查。
+
+### 11b. 调用机制
+
+1. 截图/渲染图**先落盘**（脚本/浏览器截图生成 png；主 agent 或执行者生成）。
+2. 主 agent（或对应 subagent）经适配层视觉 runner 看图：
+   - 共享 runner：`opencode/scripts/run_vision_review.ps1`（平台无关 PowerShell，mimo CLI + 视觉模型）
+   - 调用：`-ImageFiles <图1>,<图2> -Prompt <审查重点> -WorkspaceDir <根> -OutDir <产物>`
+   - 默认视觉模型 `xiaomi/mimo-v2.5`（可经 `-Model` 覆盖为 mimo-v2.5-pro 等）
+   - 产物：`<OutDir>/vision-review.md`（mimo 视觉结论）+ 退出码（0 成功 / -2 超时 / -3 错误）
+3. 视觉结论是**只读佐证**：绝不修改目标代码，只写 `.harness/<task>/vision/` 产物；视觉结论**不得虚构**——mimo 输出是唯一事实来源，图片打不开/CLI 失败/超时一律如实报告 `blocked(<原因>)`，不得编造"看到的内容"。
+
+### 11c. 与各步骤的关系
+
+| 触发步骤 | 视觉审查时机 | 结论用途 |
+|----------|-------------|----------|
+| Step 1 | 审查前先看图（截图需已落盘） | 视觉问题并入问题清单（P 编号） |
+| Step 3 | 实现后看图核对 | 作为该步验证的一部分：视觉不符 → 如实记录，不回退但如实传 Step 4 |
+| Step 4 | 复审时对比 before/after | 作为评级 `通过`/`需调整` 的视觉证据；视觉不符 → `需调整` |
+
+**边界**：视觉审查不改变绑定、不构成新步骤、不绕过 Step 4 与 Step 3 不同模型族约束（视觉模型仅看图，不替代 step4 的复审后端）；视觉审查结果与 step3 验证状态（§2b/§2c）是**两条独立证据线**，都须如实记录与传递。
+
+### 11d. 实现（各适配层）
+
+- **共享 runner**：`opencode/scripts/run_vision_review.ps1`（mimo CLI + `-f` 附加多图，mimo 需 positional message 才会执行）
+- **DSH**：`dsh/SKILL.md` + `dsh/agents/vision-reviewer.md`（subagent 模板，经 `../../opencode/scripts/run_vision_review.ps1` 调用）
+- **opencode**：`opencode/SKILL.md` + `opencode/agents/harness-orchestrator.md`（路由规则）
+- **Hermes**：不实现（自带视觉，§11 不适用）
