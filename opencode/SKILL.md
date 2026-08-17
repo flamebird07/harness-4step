@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（run_vision_review.ps1：mimo CLI + 视觉模型看图，shared/core-logic.md §11）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.20
+version: 13.0.22
 ---
 
-# 四步法 Harness（opencode 适配层 v13.0.20 — Orchestrator Auto-Read Binding-Lock）
+# 四步法 Harness（opencode 适配层 v13.0.22 — mimo CLI 通信修复 + 三平台一致）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 

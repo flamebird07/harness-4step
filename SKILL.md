@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.21
+version: 13.0.22
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.21 — DeepSeek Harness 适配层)
+# Harness 4-Step Method (v13.0.22 — mimo CLI 通信修复 + 三平台一致)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -735,7 +735,32 @@ When a loop returns to Step 2 after Step 4 review:
 - Loop 2+ prompt should reference the issue found in Step 4 review
 - Each loop must increment the version number in skill updates
 
+## 三平台版本一致性强制检查（v13.0.22 起）
+
+仓库为 Hermes / OpenCode / DeepSeek Harness 三平台共享，更新任何文件前必须保证三份 SKILL.md 版本一致：
+
+| 平台 | SKILL.md 路径 |
+|------|--------------|
+| Hermes 主技能（仓库根） | `./SKILL.md` |
+| OpenCode 适配层 | `./opencode/SKILL.md` |
+| DSH 适配层 | `./dsh/SKILL.md` |
+
+**发布前强制检查**：
+
+```bash
+python scripts/check_version_consistency.py
+# 退出码 0 才能发布；非 0 必须修复
+```
+
+脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
+
 ## Version History
+
+### v13.0.22 (2026-08-17)
+
+- **修复 run_cli.py mimo 通信 bug**：`prompt_mode="file"` 触发 `-f` flag，但 mimo CLI `-f` 是 file attach 不是 message，导致 mimo 报 "You must provide a message or a command"，所有 Step 3 mimo 子项全部失败。改为 `use_stdin: True`，通过 stdin 传入 prompt。
+- **三平台版本一致性**：Hermes / OpenCode / DSH 三平台共享 harness-4step 仓库，历史版本从 v13.0.13 → v13.0.21 为 OpenCode/DSH 侧迭代导致版本漂移。v13.0.22 起新增 `scripts/check_version_consistency.py`，发布前强制跑三平台版本对齐检查（见「三平台版本一致性强制检查」章节）。
+
 - v13.0.21 (2026-08-15): 视觉审查封装进四步法（shared/core-logic.md §11）——当 step1/step3/step4 需要视觉判断且该步后端无视觉时，经共享 runner `opencode/scripts/run_vision_review.ps1`（mimo CLI + 视觉模型 `xiaomi/mimo-v2.5`，`-f` 附加多图）看图，视觉结论作为该步输入佐证；DSH 与 opencode 适配层同步支持，Hermes 自带视觉不触发；不是新步骤、不改变绑定与 step4≠step3 约束。版本号 13.0.20 → 13.0.21。
 - v13.0.20 (2026-08-14): Step 3 验证门（shared/core-logic.md §2b/§2c）——Step 3 产物必须含 `Step 3 验证状态` 块（passed / blocked(<命令>/<原因>) / not-run(<原因>)），验证被权限/环境拦截不得以"人工目检"自评通过；Step 4 按验证状态决定兜底只读回归；step4 只读快照强制（opencode/scripts/step4_readonly_guard.ps1，P-08 快照比对回退 / P-09 双向枚举新建文件）；违规处理新增类别 D（验证被拦截）/E（复审假通过），违规强制记录。DSH 适配层同步验证门（implementer/verifier 提示词 + 编排流程）。版本号 13.0.19 → 13.0.20。
 - v13.0.19 (2026-08-14): 新增 DeepSeek Harness (DSH) 适配层——`dsh/SKILL.md` + `dsh/agents/`（6 个 subagent 提示词模板）+ `dsh/scripts/`（manage_binding.ps1 / run_step.ps1）+ `dsh/binding-lock.json`；共享逻辑 §10 增加 DSH 行、binding-recommendation 增加 dsh-sub。DSH 默认全部步骤绑定 `dsh-sub`（DSH subagent，模型族由 `models` 字段决定，step4≠step3），可选绑定外部 CLI（复用 opencode runner）。版本号 13.0.18 → 13.0.19。

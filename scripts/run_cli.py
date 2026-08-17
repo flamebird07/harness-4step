@@ -88,8 +88,7 @@ AGENT_CLI = {
         "args_base": ["run", "--print-logs", "-m", "xiaomi/mimo-v2.5-pro"],
         "output_parse": "plain",
         "step3_remove_args": [],
-        "use_stdin": False,
-        "prompt_mode": "file",
+        "use_stdin": True,
     },
     "kimi": {
         "executable": "kimi",
