@@ -5,7 +5,8 @@ param(
     [string]$WorkspaceDir,
     [Parameter(Mandatory = $true)]
     [string]$OutDir,
-    [int]$TimeoutSeconds = 300
+    [string]$Model = "xiaomi/mimo-v2.5-pro",
+    [int]$TimeoutSeconds = 900
 )
 
 $ErrorActionPreference = "Continue"
@@ -15,31 +16,27 @@ if (-not (Test-Path -LiteralPath $PromptFile)) { throw "Prompt file not found" }
 if (-not (Test-Path -LiteralPath $WorkspaceDir)) { throw "Workspace not found" }
 if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
 
-$kimi = Get-Command kimi -ErrorAction SilentlyContinue
-if (-not $kimi) { throw "kimi CLI not found in PATH" }
+$mimo = Get-Command mimo -ErrorAction SilentlyContinue
+if (-not $mimo) { throw "mimo CLI not found in PATH" }
 
 $prompt = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
 $prompt = $prompt.Trim()
 if (-not $prompt) { throw "Prompt file is empty" }
 
-$rawFile = Join-Path $OutDir "kimi_raw.txt"
-$msgFile = Join-Path $OutDir "step4-review.md"
+$rawFile = Join-Path $OutDir "mimo_step3_raw.txt"
+$msgFile = Join-Path $OutDir "step3-output.md"
 
-# Step 4 is the reviewer: read-only, must never modify files.
-# kimi has no read-only sandbox flag, so read-only is enforced behaviourally:
-# run in -p prompt mode with --add-dir (read access) and WITHOUT --yolo/--auto
-# so the reviewer cannot silently apply edits.
-# kimi's -p does not reliably accept a long prompt as a single argv value
-# (PowerShell/node shim can split it on content). Use the `@<file>` convention,
-# which makes kimi Read the prompt file directly and is robust to long content.
 $started = Get-Date
+# --dangerously-skip-permissions lets the implementer edit files (Step 3 role).
 $job = Start-Job -ScriptBlock {
-    param($PromptFile, $Exe, $WorkspaceDir)
+    param($Prompt, $Exe, $Model, $WorkspaceDir)
     $OutputEncoding = [System.Text.Encoding]::UTF8
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    $out = & $Exe -p "@$PromptFile" --output-format text --add-dir $WorkspaceDir 2>&1
+    # Feed the prompt via stdin instead of argv: long prompts break Windows argv
+    # parsing (same as kimi). mimo.ps1 forwards pipeline input to the message.
+    $out = $Prompt | & $Exe run -m $Model --dir $WorkspaceDir --dangerously-skip-permissions 2>&1
     [pscustomobject]@{ Exit = $LASTEXITCODE; Out = $out }
-} -ArgumentList $PromptFile, $kimi.Source, $WorkspaceDir
+} -ArgumentList $prompt, $mimo.Source, $Model, $WorkspaceDir
 if (Wait-Job $job -Timeout $TimeoutSeconds) {
     $result = Receive-Job $job
     $exitCode = if ($null -ne $result.Exit) { [int]$result.Exit } else { -1 }
@@ -54,8 +51,6 @@ $elapsed = ((Get-Date) - $started).TotalSeconds
 
 $output | Out-File -LiteralPath $rawFile -Encoding utf8
 
-# Filter out PowerShell wrapper noise injected to stderr (kimi.ps1 native-command
-# errors). Keep the model's actual response lines.
 $lines = @($output | ForEach-Object { if ($null -eq $_) { "" } else { $_.ToString() } })
 $usable = @($lines | Where-Object {
     $t = $_.Trim()
@@ -65,28 +60,28 @@ $usable = @($lines | Where-Object {
     (-not $t.StartsWith("+")) -and
     (-not $t.StartsWith("CategoryInfo")) -and
     (-not $t.StartsWith("FullyQualifiedErrorId")) -and
-    (-not $t.StartsWith("kimi")) -and
+    (-not $t.StartsWith("mimo")) -and
     (-not $t.Contains(".ps1")) -and
     (-not $t.EndsWith("RemoteException")) -and
-    (-not $t.StartsWith("To resume this session"))
+    (-not $t.StartsWith("To resume"))
 })
 
 $finalMsg = ($usable -join [Environment]::NewLine)
 if (-not $finalMsg) { $finalMsg = "(no textual output; see raw file)" }
 
-$out = "> kimi CLI (exit $exitCode), $([math]::Round($elapsed,1))s`n`n$finalMsg"
+$out = "> mimo CLI (exit $exitCode), $([math]::Round($elapsed,1))s, model=$Model`n`n$finalMsg"
 $out | Out-File -LiteralPath $msgFile -Encoding utf8
 
 # evidence.json (advisory, machine-checkable) — does not replace step output / console lines.
 $evidence = [ordered]@{
     schema_version   = 1
     task_id          = (Split-Path -Leaf $WorkspaceDir)
-    step             = "step4"
+    step             = "step3"
     attempt          = 1
-    agent            = "kimi"
+    agent            = "mimo"
     exit_code        = $exitCode
     status           = if ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
-    binding_snapshot = @{ agent = "kimi"; permission_mode = "read-only-behavioural" }
+    binding_snapshot = @{ agent = "mimo"; permission_mode = "dangerously-skip-permissions" }
 }
 $evFile = Join-Path $OutDir "evidence.json"
 $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding utf8
@@ -94,4 +89,4 @@ $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding ut
 Write-Output ("EXIT_CODE=" + $exitCode)
 Write-Output ("ELAPSED=" + $elapsed + "s")
 Write-Output ("RAW=" + $rawFile)
-Write-Output ("REVIEW=" + $msgFile)
+Write-Output ("OUTPUT=" + $msgFile)

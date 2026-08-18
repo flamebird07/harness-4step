@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
-description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（run_vision_review.ps1：mimo CLI + 视觉模型看图，shared/core-logic.md §11）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.22
+description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
+version: 13.0.13
 ---
 
-# 四步法 Harness（opencode 适配层 v13.0.22 — mimo CLI 通信修复 + 三平台一致）
+# 四步法 Harness（opencode 适配层）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -14,51 +14,34 @@ version: 13.0.22
 
 | 维度 | Hermes 适配层 | opencode 适配层（本文件） |
 |------|--------------|---------------------------|
-| 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | bash 调 claude CLI（step1-3）+ codex CLI（step4），绑定由 `binding-lock.json` + `manage_binding.ps1` 管理 |
-| 反绕过 | `plugin/four-step-enforcer` | 绑定 CLI：prompt 只读前缀 + 统一经 `scripts/` 脚本调用 + 事后基线回退；绑定 opencode-sub：subagent `permission: edit: deny` |
+| 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | Task 调度 `harness-*` subagent（step1-3）+ bash 调 codex CLI（step4） |
+| 反绕过 | `plugin/four-step-enforcer` | subagent `permission: edit: deny`（系统级） |
 | 队列/超时/拆分 | Hermes 专属机制 | 不复制，opencode 用任务清单+估算即可 |
 
-## 后端绑定（binding-lock.json 锁定；默认 step1/2/3=claude CLI）
+## 后端绑定（当前锁定配置）
 
-**绑定来源**：绑定持久化在 `~/.config/opencode/harness/binding-lock.json`（本机私有；模板在仓库 `opencode/binding-lock.json`；env `OPCODE_BINDING_LOCK` 可覆盖路径）。锁有效条件：`schema_version==1 && locked==true && bindings` 恰好覆盖 step1..step4——任一不满足即 fail-closed（Step 0 的 `manage_binding.ps1 -Check` 拒绝继续）。**绑定变更只能用 `opencode/scripts/manage_binding.ps1 -AuthorizeStep <step> -Agent <agent> -Authorization "<用户授权原文>"` 完成**（授权文本 ≥12 字符、写入 `authorization_log`、tmp 原子替换），禁止手改 lock 绕过。**脚本一律读 `~/.config/opencode/harness/binding-lock.json`（或 `OPCODE_BINDING_LOCK` 覆盖），不读仓库模板**；仓库 `opencode/binding-lock.json` 变更后须用 `manage_binding.ps1 -InstallFromRepo` 同步到本机副本再继续。
+**绑定来源**：opencode 侧的绑定即下表（subagent + 外部 CLI 混合），变更必须用户显式授权；不依赖 Hermes 的 `~/.hermes/binding-lock.json`。当前绑定：
+- **step1 = `harness-auditor` subagent**（主模型，edit: deny）
+- **step2 = `harness-planner` subagent**（主模型，edit: deny）
+- **step3 = mimo CLI（外部独立进程）**——通过 bash 调 `opencode/scripts/run_mimo_step3.ps1` 执行（edit: allow，`--dangerously-skip-permissions`）
+  - 备用：opencode `harness-implementer` subagent（主模型，edit: allow）
+- **step4 = codex CLI（外部独立模型族）**——通过 bash 调 `opencode/scripts/run_codex_step4.ps1` 执行
+- 备用：mimo CLI 已配好 `opencode/scripts/run_mimo_step4.ps1`（认证失效时临时切换，需用户授权）
 
-**当前绑定（用户显式授权："step1/2/3 用 Claude code cli"）**：
-- step1 = claude CLI（`run_claude_step12.ps1 -Step step1`，只读）
-- step2 = claude CLI（`run_claude_step12.ps1 -Step step2`，只读）
-- step3 = claude CLI（`run_claude_step12.ps1 -Step step3`，写文件，带 `--dangerously-skip-permissions`）
-- step4 = codex CLI（外部独立模型族，`run_codex_step4.ps1`）
-- step4 备用：mimo CLI（`run_mimo_step4.ps1`），仅当 codex 认证失效且用户显式授权时切换，经 `manage_binding.ps1 -AuthorizeStep step4 -Agent mimo` 记录；`harness-verifier` 作为 *CLI 备用*的兜底路径已废弃（双兜底冲突，见 agents/harness-verifier.md）；但 `opencode-sub` 绑定分派到 `harness-verifier` 的路径仍受支持（经 run_step.ps1 输出 BINDING=opencode-sub 后由主 agent 调度）
-
-**核心约束（不可违反，`manage_binding.ps1 -Check` 强制校验）**：Step 4 必须与 Step 3 不同模型族（当前 step3=claude、step4=codex，不同族；任何授权变更写入前立即校验，不满足则拒绝写入）。
-
-**超时/描述配置（可选，用户本机私有）**：`~/.config/opencode/harness/harness-config.json`（模板 `opencode/harness-config.example.json`，env `OPCODE_HARNESS_CONFIG` 覆盖）可覆盖每步 `timeout_seconds` 与 `description`；**不得含 agent 字段**（绑定只由 binding-lock.json 决定，对齐 Hermes v13.0.10 防双配置源漂移）。编排时以 `manage_binding.ps1 -ShowBindings` 输出的 timeout 为准，传给各 ps1 的 `-TimeoutSeconds`。
+**核心约束（不可违反）**：Step 4 复审必须与 Step 3 使用不同模型族（step4 为外部 CLI，step1-3 为主模型，天然满足）。
+绑定以机器可校验锁文件 `binding-lock.json` 为准（字段子集与 Hermes 端 schema 兼容）。`locked=false` 或 step3/step4 模型族相同 → orchestrator fail-closed 拒绝启动。runner 不直接接收 Step 0。
 
 ## 角色与权限映射
 
-| 步骤 | 角色 | 后端（binding-lock.json 锁定，默认） | 权限 | 职责 |
+| 步骤 | 角色 | 后端 | 权限 | 职责 |
 |------|------|------|------|------|
-| 1 | 审查 | **claude CLI**（`run_claude_step12.ps1 -Step step1`） | 只读（无权限跳过） | 只找问题，不写方案（P 编号） |
-| 2 | 方案 | **claude CLI**（`run_claude_step12.ps1 -Step step2`） | 只读（无权限跳过） | 只写计划（F-<P编号> + before/after） |
-| 3 | 执行 | **claude CLI**（`run_claude_step12.ps1 -Step step3`） | 写文件（--dangerously-skip-permissions） | 严格按方案改，不分析 |
-| 4 | 复审 | **codex CLI**（playbook: `opencode/scripts/run_codex_step4.ps1`） | 脚本注入只读 prompt 前缀；无系统级隔离（opencode 无插件拦截），越权只能事后基线回退 | 独立验证（读实际代码 + 只读核对） |
+| 1 | 审查 | `harness-auditor` subagent | edit: deny | 只找问题，不写方案（P 编号） |
+| 2 | 方案 | `harness-planner` subagent | edit: deny | 只写计划（F-<P编号> + before/after） |
+| 3 | 执行 | **mimo CLI**（`opencode/scripts/run_mimo_step3.ps1`，edit: allow） | 严格按方案改，不分析 |
+| 4 | 复审 | **codex CLI**（playbook: `opencode/scripts/run_codex_step4.ps1`） | 只读验证天然隔离（read-only sandbox） | 独立验证（读实际代码 + 跑回归） |
 
-- **后端开关可配置**：当前绑定 step1/2/3=claude CLI、step4=codex CLI（见 `opencode/SKILL.md#后端绑定`）。`opencode-sub`（subagent）仅当用户经 `manage_binding.ps1 -AuthorizeStep <step> -Agent opencode-sub` 显式授权切换时才启用，**默认关闭**；未授权时主 agent 不得因文档存在 subagent 分支而改走 subagent。
-- step1-3 每次 CLI 调用都是**全新独立上下文**，只传问题描述/上一步产物，**不传主 agent 的分析结论**。
+- step1-3 每次 Task 调用都是**全新独立上下文**，只传问题描述/上一步产物，**不传主 agent 的分析结论**。
 - step4 由主 agent 用 bash 调 codex CLI，独立进程独立上下文。
-
-## claude CLI 调用规范（step1/2/3 当前绑定）
-
-```powershell
-& "opencode\scripts\run_claude_step12.ps1" -Step step1 -PromptFile ".harness\<task>\step1-prompt.txt" -WorkspaceDir "<仓库根>" -OutDir ".harness\<task>\step1"
-& "opencode\scripts\run_claude_step12.ps1" -Step step2 -PromptFile ".harness\<task>\step2-prompt.txt" -WorkspaceDir "<仓库根>" -OutDir ".harness\<task>\step2"
-& "opencode\scripts\run_claude_step12.ps1" -Step step3 -PromptFile ".harness\<task>\step3-prompt.txt" -WorkspaceDir "<仓库根>" -OutDir ".harness\<task>\step3"
-# 产物：<OutDir>/claude_raw.txt（原始输出）、<OutDir>/<Step>-output.md（过滤后的模型正文 = 该步产物）
-```
-
-- `$Step` 仅接受 step1/step2/step3；脚本按步骤注入保护前缀（step1/2 只读、step3 禁止自跑测试），step3 自动带 `--dangerously-skip-permissions`（写文件），step1/2 不带。
-- prompt 只含事实：step1=问题描述+文件路径；step2=问题清单（P 编号）；step3=F<编号> before/after 方案；禁止夹带主 agent 倾向性结论。
-- 超时默认 step1/2=120s、step3=300s（可经 harness-config.json 覆盖，见"后端绑定"节的配置说明）。
-- 失败信号：`EXIT_CODE=-3`=参数错误（修 prompt 后重跑）；`-2`=超时（先按 §4b 拆分优先处置：若可拆分则拆出无依赖子项重跑，拆分已达最小粒度才允许显式声明降级）；`-1`=无 agent_message，重试一次；仍失败则记录后向用户汇报。
 
 ## codex CLI 调用规范（step4 当前绑定）
 
@@ -74,11 +57,27 @@ version: 13.0.22
 ```
 
 - **连接前提**：脚本按 PATH 解析 `codex`；PATH 无 codex 时回退 `CODEX_HOME\.sandbox-bin\codex.exe`（`CODEX_HOME` 默认 `~/.ccsc/codex-mimo`，可用环境变量覆盖）。若认证失效会 401，需用户 `codex login`（或在 Codex 应用重新登录）。
-- **只读技术强制（P-08/P-09）**：`run_codex_step4.ps1` 已接入 `step4_readonly_guard.ps1`——step4 运行前后对受监控文件做 sha256 快照比对，越权写文件即自动回退 + 记录违规 + `EXIT_CODE=STEP4_WRITE_VIOLATION`。默认 `--sandbox danger-full-access`（本机可用的普通访问模式，不依赖只读沙箱辅助程序，保证 codex 可启动）；Layer A 只读沙箱为尽力而为加固，仅当显式传 `-Sandbox read-only` 且本机支持时启用，不支持则启动前回退 `danger-full-access` 并输出 `WARN=SANDBOX_UNAVAILABLE_FALLBACK`。只读的机械保障始终由 Layer B 快照比对承担，不依赖沙箱。
-- prompt 必须包含：step1 原始问题清单（P 编号）+ 修改后文件绝对路径 + **step3 验证状态（passed / blocked(<命令>/<原因>) / not-run(<原因>)）** + 明确要求"打开实际文件核对、只读核对（Get-Content/rg/git diff/git status），必要时补跑只读回归（判定见 F-03），禁止写文件、禁止安装依赖、逐条评级、输出总体 通过/需调整"。step3 验证状态未提供时，Step 4 按 blocked 处理（必须补跑回归）。
-- 脚本向 prompt 注入 step4 只读前缀（允许只读核对 + 验证状态非 passed 时的只读回归，禁止写文件/安装依赖；只读命令白名单见本节）。只读的机械保障由 `opencode/scripts/step4_readonly_guard.ps1` 提供（F-08）：step4 前后对受监控文件做 sha256 快照比对，越权写文件即自动回退 + 记录违规 + 以 EXIT_CODE=STEP4_WRITE_VIOLATION 失败，不再仅靠 prompt。
+- **只读强制（不可违反）**：`run_codex_step4.ps1` 用 `--sandbox read-only` 启动 codex，**blocked 一切写操作**（apply_patch / Edit / Write / 写文件命令）。step4 是复审者，只能读验证，绝不允许改文件。若 codex 尝试写文件会被 sandbox 拒绝并报错——这是预期行为，不是故障。
+- prompt 必须包含：step1 原始问题清单（P 编号）+ 修改后文件绝对路径 + 明确要求"打开实际文件核对、能跑回归就跑、逐条评级、输出总体 通过/需调整"。
 - 传给 codex 的 prompt 只含事实（问题 + 文件路径），不含主 agent 的倾向性结论。
 - 若输出含 `NO agent_message` 或 `EXIT_CODE=-1`，重试一次；仍失败则记录后向用户汇报。
+
+## mimo CLI 调用规范（step3 执行，当前绑定）
+
+```powershell
+# 把执行 prompt 写入 .harness/<task>/step3-prompt.txt 后执行：
+& "opencode\scripts\run_mimo_step3.ps1" `
+    -PromptFile ".harness\<task>\step3-prompt.txt" `
+    -WorkspaceDir "<仓库或工作目录>" `
+    -OutDir ".harness\<task>\step3"
+# 产物：step3/mimo_step3_raw.txt（原始输出）、step3/step3-output.md
+# 路径说明：仓库内用 opencode/ 相对路径；按 opencode/README.md 安装后脚本位于 <skill 目录>/scripts/，
+# 调用对应改为 & "<skill 目录>\scripts\run_mimo_step3.ps1"
+```
+
+- **长 prompt 兼容性（关键）**：脚本用 **stdin 管道** 把 prompt 喂给 mimo，而非 argv 位置参数。Windows 上长 prompt 会破坏 mimo 的 argv 解析（与 kimi 相同），短 prompt 正常、长 prompt 报错即此问题。**不要改成 `--file`**：mimo 的 `-f/--file` 是贪婪的附件文件路径数组，会吞掉后续参数并报 `File not found`，不能用来传 prompt。
+- 模型默认 `xiaomi/mimo-v2.5-pro`。
+- 执行身份：`--dangerously-skip-permissions` 允许改文件（step3 职责）。
 
 ## mimo CLI 调用规范（step4 备用）
 
@@ -92,85 +91,45 @@ version: 13.0.22
 # 调用对应改为 & "<skill 目录>\scripts\run_mimo_step4.ps1"
 ```
 
-- 仅当 codex 认证失效且用户显式授权切 mimo 时使用（经 `manage_binding.ps1 -AuthorizeStep step4 -Agent mimo` 记录）。模型默认 `xiaomi/mimo-v2.5-pro`；脚本已内置 `--print-logs`、step4 只读前缀与 mimo 防虚构前缀、`-f` 文件传参（对齐 Hermes run_cli.py：避免超长 prompt 命令行截断）。
+- 仅当 codex 认证失效且用户显式授权切 mimo 时使用。模型默认 `xiaomi/mimo-v2.5-pro`。
 
-## kimi CLI 调用规范（step4 备用，-p 位置参数）
+## Pitfalls（实施踩坑备忘）
 
-```powershell
-& "opencode\scripts\run_kimi_step4.ps1" `
-    -PromptFile ".harness\<task>\step4-prompt.txt" `
-    -WorkspaceDir "<仓库或工作目录>" `
-    -OutDir ".harness\<task>\step4"
-# 产物：step4/kimi_raw.txt（原始输出）、step4/step4-review.md
-```
+### Pitfall 1 · 拆分递归爆炸
+- **现象**：某步 CLI 超时后自动拆分 prompt 重跑，子项仍超时再拆，无限递归耗尽资源。
+- **规则**：受 `MaxSplitDepth=3`、`MaxAttempts=3` 壁垒约束，最小粒度=单文件（prompt 行数 < 4 不再拆）；触壁垒即写 `status="blocked_split_limit"`、进程以 `EXIT_CODE=3` 退出，不再递归（详见 `shared/core-logic.md` §6.1）。
+- **触发**：某步 CLI 超时（`EXIT_CODE=-2`）且当前 prompt 仍可拆。
 
-- **传参方式**：实现为 `kimi -p <prompt> --add-dir <workspace>` **位置参数**（kimi 不支持 stdin，与 run_claude 的 stdin 管道不同，也与 run_mimo 的 `-f` 文件传参不同）。
-- **截断风险**：`-p` 命令行参数有 **8191 字符**上限，超长 prompt 会被截断。若 prompt 超长应精简（或改经 run_mimo_step4.ps1 的 `-f` 文件模式），不要在 `-p` 里塞超长文本。
+### Pitfall 2 · 借拆分换模型族绕过绑定
+- **现象**：执行者借"拆分重跑"之名改用另一模型族，规避"Step 4 必须与 Step 3 不同模型族 / 绑定变更需显式授权"的约束。
+- **规则**：拆分重跑沿用原步绑定——orchestrator 从 `binding-lock.json` 读 `bindings.$Step`，禁止借拆分换模型族；换绑定只能编辑 `binding-lock.json` 并在 `authorization_log` 追加条目。
+- **触发**：超时拆分路径被触发时。
 
-## 视觉审查（四步法内部视觉兜底，shared/core-logic.md §11）
+### Pitfall 3 · evidence.json 缺失或被覆盖
+- **现象**：runner 只写 `stepN-output.md` 不留机器可校验证据，或控制台输出覆盖 evidence 导致失败无法追溯。
+- **规则**：每个 runner 在 `Out-File $msgFile` 之后、`Write-Output` 之前追加写 `evidence.json`（7 字段 + `binding_snapshot`），**不替换**原有 `stepN-output.md` 与 `EXIT_CODE/ELAPSED/RAW/OUTPUT` 控制台行。
+- **触发**：任意 runner 正常或异常退出前。
 
-> 定位：**不是新步骤**，是四步法内部的**跨步视觉兜底**。当四步法某一步（step1 审截图 / step3 核对 UI 效果 / step4 对比 before-after）**需要视觉判断**、而该步绑定的后端（opencode CLI/subagent，均无视觉）**无视觉**时，经本能力看图。Hermes **自带视觉识别，不触发本机制**；opencode 与 DSH 必须支持。
+## 编排流程（主 agent 用 Task 工具）
 
-**调用（共享 runner，平台无关 PowerShell + mimo CLI）**：
-
-```powershell
-& "opencode\scripts\run_vision_review.ps1" `
-    -ImageFiles "<图1>","<图2>" `
-    -Prompt "<审查重点>" `
-    -WorkspaceDir "<仓库根>" `
-    -OutDir ".harness\<task>\vision"
-# 产物：vision/vision-review.md（mimo 视觉结论）；退出码 0 成功 / -2 超时 / -3 错误
-# 默认模型 xiaomi/mimo-v2.5；可 -Model 覆盖为 mimo-v2.5-pro 等
-```
-
-- **触发**：step1/step3/step4 需要视觉判断且后端无视觉时（shared/core-logic.md §11a 触发条件表）；截图/渲染图先落盘（脚本或浏览器截图生成 png）再调用。
-- **机制**：主 agent 用 bash/pwsh 调 `run_vision_review.ps1`（或绑定 opencode-sub 时经 `harness-verifier` 内嵌），mimo CLI `-f` 附加多张图给视觉模型。
-- **只读**：`run_vision_review.ps1` 只写 `.harness/<task>/vision/` 产物，不碰目标代码；视觉结论**不得虚构**（mimo 输出是唯一事实来源，失败/超时如实报告 `blocked`）。
-- **边界**：不改变绑定、不构成新步骤、不绕过 step4≠step3 模型族约束（视觉模型仅看图，不替代 step4 复审后端）；视觉结论与 step3 验证状态（§2b/§2c）是两条独立证据线（shared/core-logic.md §11c）。
-- **共享**：脚本位于 `opencode/scripts/run_vision_review.ps1`（DSH 经 `../../opencode/scripts/` 引用共用）。
-
-## 编排流程（主 agent 用 Task 工具 + run_step.ps1 统一分派）
-
-### 动态拆分前置规则
-
-默认使用 `harness-orchestrator` 作为主代理。它先判断任务是否需要委派：单一、明确、低风险任务可直接完成；有多个独立未知点、跨模块影响或需求歧义时，先把代码事实问题拆成互不依赖的工作包，并行调用 `harness-explorer`。对边界完全独立的模块，可并行调用 `harness-auditor`，但每个审查包必须拥有独立的 `.harness/<task>` 产物目录。
-
-同一可写工作包仍必须走下面的严格四步闭环。只有文件范围、验收条件和依赖都不重叠的工作包才可并行实施；多个执行 agent 禁止修改同一文件或同一逻辑区域。完整的路由表和安装方式见 `opencode/DYNAMIC-DELEGATION.md`。
-
-每步统一经 `opencode/scripts/run_step.ps1 -Step step<N> -PromptFile <file> -WorkspaceDir <根> -OutDir <dir>` 分派：脚本读 `binding-lock.json` 取该步绑定，按绑定调对应 runner（claude/codex/mimo/kimi）。若脚本输出 `BINDING=opencode-sub` 且 `EXIT_CODE=99`，主 agent 必须改用 Task 工具调度对应 subagent（按 `SUBAGENT` 字段：step1→`harness-auditor`、step2→`harness-planner`、step3→`harness-implementer`、step4→`harness-verifier`），未消费该信号视为本步未完成；其余绑定（CLI）即由 run_step.ps1 直调 runner，**主 agent 不得跳过 run_step.ps1 直接调 runner 脚本**。
-
-1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置；**必须执行** `opencode/scripts/manage_binding.ps1 -Check` 校验绑定（lock 存在且 locked、bindings 恰好 step1..step4、step4 与 step3 不同模型族），**失败即停**——校验失败即向用户报告并停止，不得继续后续步骤。
-2. **Step 1** prompt（问题+文件路径）写入 `.harness/<task>/step1-prompt.txt` → 调 `run_step.ps1 -Step step1` → 把分派产物（CLI runner 为 `step1/step1-output.md`；subagent 为 Task 返回）落为 `step1-problems.md`（P 编号）。零问题则终止报告。
-3. **Step 2** prompt（问题清单）写入 `.harness/<task>/step2-prompt.txt` → 调 `run_step.ps1 -Step step2` → 把分派产物落为 `step2-plan.md`（F-<P编号>）。只读步骤超时（`EXIT_CODE=-2`）按 §4b 拆分优先：可拆则调 `run_step.ps1 -Step step1|2 -SplitOf <父项>` 拆出无依赖子工作包，拆分已达最小粒度才允许显式声明降级。
+1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置。
+   加载并校验 `binding-lock.json`：`locked` 必须 `true`、step3 与 step4 模型族必须不同（`constraints.step4_must_differ_from_step3_family`）；任一不满足 orchestrator fail-closed 拒绝启动（runner 不直接接受 Step 0 调用）。绑定变更通过编辑 `binding-lock.json` 并在 `authorization_log` 追加条目实现；不得直接修改本文档的「后端绑定」节绕过校验。
+2. **Step 1** `harness-auditor`：入参 = 问题 + 文件路径 → `step1-problems.md`（P 编号）。零问题则终止报告。
+3. **Step 2** `harness-planner`：入参 = 问题清单 → `step2-plan.md`（F-<P编号>）。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
-5. **Step 3** prompt（F 方案清单）写入 `.harness/<task>/step3-prompt.txt` → 调 `run_step.ps1 -Step step3` → 产物落为 `step3-changes.md`。执行后对比基线验无方案外改动。**验证门**：读取 step3 产物末尾 `Step 3 验证状态`；为 `blocked/not-run` 时按 core-logic §8-D 类别调 `manage_binding.ps1 -RecordViolation` 记录，并把验证状态原样写入 Step 4 prompt；不得仅凭人工目检判 Step 3 完成。
-- Step 3 产物头部记录 `实际执行路径`（run_step.ps1 → run_claude_step12.ps1 / approval 提示原文），供事后核实绑定是否被绕过（P-06 留痕）。
-6. **Step 4** 入参 = 修改后代码绝对路径 + step1 问题清单 + **step3 验证状态（取自 step3-changes.md 的 `Step 3 验证状态`）** → 写 `step4-prompt.txt` → 调 `run_step.ps1 -Step step4` → 读取 `step4/step4-review.md`，评级 `通过`/`需调整`。step3 验证状态为 blocked/not-run 时，prompt 明确要求 Step 4 补跑只读回归（F-03 判定）。
+5. **Step 3** 执行：把方案写入 `step3-prompt.txt` → 调 `opencode/scripts/run_mimo_step3.ps1`（stdin 管道喂 prompt，见"mimo CLI 调用规范（step3）"）→ 读 `step3/step3-output.md`。执行后对比基线验无方案外改动。
+6. **Step 4** **codex CLI**：入参 = 修改后代码绝对路径 + step1 问题清单 → 写 `step4-prompt.txt` → 调 `opencode/scripts/run_codex_step4.ps1` → 读取 `step4/step4-review.md`，评级 `通过`/`需调整`。
 7. **循环**：`需调整` → 回 Step 2（只处理未通过的 P + 新阻塞；入参加挂上轮复审）。Step 1 只做一次。上限默认 3 次（可配置到 10，见 shared/core-logic.md §6），超限汇报未解决问题。
 
 ## 硬性规则（主 agent）
 
-- 同一修复包内每步等上一 subagent 返回后才进下一步；不可跳步。独立的只读侦察、审查包和文件范围不重叠的完整修复包可以并行
+- 每步等上一 subagent 返回后才进下一步；不可并行、不可跳步
 - 主 agent 不得自己分析根因、写方案、改代码
 - 传参只传原始问题/产物，禁止夹带倾向性结论
-- 任何违规（step4 越权写文件 / step3 验证被拦截 / 绑定违规 / 跳步并行 / step4 假通过）必须先调 `manage_binding.ps1 -RecordViolation` 记录再继续，不得仅口头说明（触发点清单见 harness-orchestrator#违规记录强制点）
-- Step 3 产物必须含 `Step 3 验证状态`；验证被拦截按 core-logic §8-D 记录并如实传给 Step 4（§2b 验证门）
 - Step 3 完成后必须立即进入 Step 4，不得中途停下汇报当"完成"
-- 某步需要视觉判断且后端无视觉时，先经 `run_vision_review.ps1` 看图再进入/完成该步（视觉审查是内部视觉兜底，shared/core-logic.md §11；视觉结论作为该步输入佐证，不改变绑定与步骤顺序）
 
 ## 违规处理
 
 越权修改文件：用 `baseline.diff`/备份精确回退 → 从违规点重走 → 记录到 `violations.log`。
 
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
-
-## 版本历史
-
-- v13.0.20 (2026-08-15): 视觉审查封装进四步法（shared/core-logic.md §11）——新增共享 runner `opencode/scripts/run_vision_review.ps1`（mimo CLI + 视觉模型 `xiaomi/mimo-v2.5` 看图，`-f` 附加多图，输出 `vision-review.md`）；当 step1/step3/step4 需要视觉判断且后端无视觉时触发，视觉结论作为该步输入佐证；DSH 经 `../../opencode/scripts/` 引用共用；Hermes 自带视觉不触发。版本号 13.0.19 → 13.0.20。
-- v13.0.19 (2026-08-14): Step 3 验证门 + step4 只读快照强制——run_codex_step4.ps1 接入 step4_readonly_guard.ps1（P-08 快照比对回退 / P-09 双向枚举新建文件，越权写文件自动回退 + 记录违规 + EXIT_CODE=STEP4_WRITE_VIOLATION）；codex 沙箱 Layer A 尽力而为（-Sandbox read-only 仅本机支持时启用，否则回退 danger-full-access 并输出 WARN=SANDBOX_UNAVAILABLE_FALLBACK）；mimo/kimi step4 同步接入快照守卫；Step 4 prompt 新增 step3 验证状态输入；验证门与违规类别 D/E 对齐 shared/core-logic.md §2b/§2c/§8。版本号 13.0.18 → 13.0.19。
-- v13.0.18 (2026-08-14): 主 agent 自动读 binding-lock——orchestrator 路由规则新增 Step 0 强制 manage_binding.ps1 -Check + run_step.ps1 唯一分派入口；"备用后端"改"开/关可配置"默认关闭（11/11 P 通过）。版本号 13.0.17 → 13.0.18。
-- v13.0.17 (2026-08-14): 拆分优先 + binding-lock 技术强制——与顶层 v13.0.17 同步；orchestrator 路由规则纳入 run_step.ps1 唯一分派入口 + Step 0 强制 manage_binding.ps1 -Check（F-B-01/F-B-06）；角色映射"备用后端"改"开/关可配置"（F-B-04）。版本号 13.0.16 → 13.0.17。
-- v13.0.16 (2026-08-13): 融合后加固——run_step.ps1 claude 分支 step-aware 超时（step3→300、step1/2→120）；codex/mimo/kimi step4 回退 300→180；opencode-sub 改权威分派契约（输出 BINDING/STEP/SUBAGENT + 出口码 99，未消费视为未完成）；harness-orchestrator "直接处理"限定只读；DYNAMIC-DELEGATION 新增"与 CLI 绑定分派（线B）的关系" + 调度表只读限定；verifier 兜底措辞澄清。版本号 13.0.15 → 13.0.16。
-- v13.0.15 (2026-08-13): 绑定 fail-closed 加固——manage_binding.ps1 / run_step.ps1 受支持 agent 统一为 claude/codex/mimo/kimi/opencode-sub（去 gemini）；run_step.ps1 分派前校验 schema/locked/完整绑定/受支持 agent/step3≠step4 模型族；manage_binding.ps1 补 step1/2 受支持校验；run_codex_step4.ps1 用 `-C` 传 WorkspaceDir 给 codex exec；kimi 文档对齐（-p 位置参数 + 8191 截断）；README 安装清单补 run_step.ps1 / run_kimi_step4.ps1。版本号 13.0.14 → 13.0.15。
-- v13.0.14 (2026-08-13): 编排动态分派——新增统一入口 `opencode/scripts/run_step.ps1 -Step step1..4`，读 binding-lock.json 按绑定分派到对应 runner，opencode-sub 绑定输出 `BINDING=opencode-sub` 信号改走对应 subagent；新增 `run_kimi_step4.ps1`（kimi 用 `-p` 位置参数传 prompt，**非 stdin**，有 8191 命令行截断风险）；step4 只读前缀裁决为允许只读核对（禁止写文件/测试）；run_claude_step12.ps1 修复 Start-Job stdin UTF-8 + step1/2/3 加 `--add-dir`。
-- v13.0.13 (2026-08-13): 绑定升级——新增 `opencode/binding-lock.json` 持久化 + `opencode/scripts/manage_binding.ps1`（-Check 校验 / -AuthorizeStep 显式授权 / authorization_log / tmp 原子写 / step4≠step3 模型族强制）；step1/2/3 默认绑定 Claude Code CLI（用户显式授权），step4=codex 保持不同模型族；mimo 脚本改 `-f` 文件模式 + `--print-logs` + 只读/防虚构前缀；三个 ps1 统一超时部分输出与失败信号（EXIT_CODE=-3）；run_claude_step12.ps1 修复 step 语义/去掉 ANTHROPIC_* 环境变量 hack。

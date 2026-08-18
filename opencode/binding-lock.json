@@ -2,17 +2,13 @@
   "schema_version": 1,
   "locked": true,
   "bindings": {
-    "step1": "claude",
-    "step2": "claude",
-    "step3": "claude",
-    "step4": "codex"
+    "step1": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
+    "step2": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
+    "step3": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
+    "step4": { "agent": "mimo",   "model": "xiaomi/mimo-v2.5-pro", "permission_mode": "default" }
   },
-  "authorization_log": [
-    {
-      "at": "2026-08-13T00:00:00+08:00",
-      "step": "bootstrap",
-      "agent": "step1/2/3=claude, step4=codex",
-      "authorization": "用户显式授权：step1/2/3 用 Claude code cli（四步法会话中明确说 step1/2/3 用Claude code cli）"
-    }
-  ]
+  "constraints": {
+    "step4_must_differ_from_step3_family": true
+  },
+  "authorization_log": []
 }

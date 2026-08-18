@@ -1,90 +1,134 @@
-﻿param(
-    [Parameter(Mandatory = $true)][string]$Step,
-    [Parameter(Mandatory = $true)][string]$PromptFile,
-    [Parameter(Mandatory = $true)][string]$WorkspaceDir,
-    [Parameter(Mandatory = $true)][string]$OutDir,
-    [int]$TimeoutSeconds = 0,
-    [string]$SplitOf = ""       # F-A-06：非空 = 本次为拆分重跑，父项标记拆分
+﻿# Harness 4-Step orchestrator —— opencode 适配层 v13.0.13（2026-08-18）
+# 唯一逻辑源：shared/core-logic.md §4b / §6.1 / §8；变更必须先 bump SKILL.md patch 位。
+# 本文件由 scripts/run_step.ps1 实施；与 Hermes harness-4step/opencode/scripts/run_step.ps1 结构平行但字段语义不同（嵌套 binding schema + Merge-Evidence）。
+
+am(
+    [Parameter(Mandatory=$true)][string]$Step,            # step1|step2|step3|step4
+    [Parameter(Mandatory=$true)][string]$PromptFile,
+    [Parameter(Mandatory=$true)][string]$WorkspaceDir,
+    [Parameter(Mandatory=$true)][string]$OutDir,
+    [int]$TimeoutSeconds = 900,
+    [int]$MaxAttempts = 3,
+    [int]$MaxSplitDepth = 3
 )
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-function Fail-Cli([string]$Message) { Write-Output "EXIT_CODE=-3"; Write-Output ("ERROR=" + $Message); exit 1 }
-$KNOWN_STEPS = @("step1","step2","step3","step4")
-if ($KNOWN_STEPS -notcontains $Step) { Fail-Cli "Invalid Step '$Step'" }
-# 读绑定锁（fail-closed）：schema_version / locked / 恰好 step1..step4 / 受支持 agent / step3≠step4 模型族
-$lockPath = $env:OPCODE_BINDING_LOCK
-if (-not $lockPath) { $lockPath = Join-Path $HOME ".config\opencode\harness\binding-lock.json" }
-if (-not (Test-Path -LiteralPath $lockPath)) { Fail-Cli "Missing binding lock: $lockPath" }
-try { $lock = Get-Content -LiteralPath $lockPath -Encoding UTF8 -Raw | ConvertFrom-Json } catch { Fail-Cli "Invalid binding lock JSON" }
-if ($lock.schema_version -ne 1) { Fail-Cli "Invalid binding lock: schema_version 必须为 1" }
-if (-not $lock.locked) { Fail-Cli "Invalid binding lock: locked 必须为 true" }
-$lockKeys = @($lock.bindings.PSObject.Properties.Name)
-if (($lockKeys | Sort-Object) -join "," -ne (($KNOWN_STEPS | Sort-Object) -join ",")) {
-    Fail-Cli "Binding lock 必须恰好定义 step1, step2, step3, step4"
-}
-$AGENT_FAMILY = @{
-    "claude" = "claude"; "codex" = "openai"; "mimo" = "mimo";
-    "kimi" = "moonshot"; "opencode-sub" = "opencode-main"
-}
-foreach ($s in $KNOWN_STEPS) {
-    $a = $lock.bindings.$s
-    if (-not $AGENT_FAMILY.ContainsKey($a)) {
-        Fail-Cli "绑定 '$a'（$s）不受支持（受支持 agent：$($AGENT_FAMILY.Keys -join ', ')）"
+
+# Step 0：加载 binding-lock.json fail-closed 校验（详见 F-PBINDING）
+$SkillDir = Split-Path -Parent $PSScriptRoot
+$lockFile = Join-Path $SkillDir "binding-lock.json"
+if (-not (Test-Path -LiteralPath $lockFile)) { throw "binding-lock.json missing at $lockFile" }
+$lock = Get-Content -LiteralPath $lockFile -Encoding UTF8 -Raw | ConvertFrom-Json
+if (-not $lock.locked) { throw "binding NOT locked — fail-closed" }
+$b = $lock.bindings.$Step; if (-not $b) { throw "no binding for $Step in binding-lock.json" }
+if ($Step -eq "step4" -and $lock.constraints.step4_must_differ_from_step3_family) {
+    if ($lock.bindings.step3.agent -eq $b.agent) {
+        throw "step4 agent ($($b.agent)) must differ from step3 agent ($($lock.bindings.step3.agent)) family"
     }
 }
-if ($lock.bindings.step3 -eq $lock.bindings.step4 -or $AGENT_FAMILY[$lock.bindings.step3] -eq $AGENT_FAMILY[$lock.bindings.step4]) {
-    Fail-Cli "绑定违规：step3='$($lock.bindings.step3)' 与 step4='$($lock.bindings.step4)' 同模型族。Step 4 必须与 Step 3 不同模型族。"
+
+# 选择对应 runner 脚本（按 binding.agent）
+$runner = switch ($b.agent) {
+    "claude" { Join-Path $PSScriptRoot "run_claude_step12.ps1" }
+    "mimo"   { Join-Path $PSScriptRoot $(if ($Step -eq "step4") { "run_mimo_step4.ps1" } else { "run_mimo_step3.ps1" }) }
+    "codex"  { Join-Path $PSScriptRoot "run_codex_step4.ps1" }
+    "kimi"   { Join-Path $PSScriptRoot "run_kimi_step4.ps1" }
+    default  { throw "unknown agent in binding-lock.json: $($b.agent)" }
 }
-$agent = $lock.bindings.$Step
-if (-not $agent) { Fail-Cli "No binding for $Step in $lockPath" }
-# 读 harness-config 超时
-$cfgPath = $env:OPCODE_HARNESS_CONFIG
-if (-not $cfgPath) { $cfgPath = Join-Path $HOME ".config\opencode\harness\harness-config.json" }
-$timeout = $TimeoutSeconds
-if (Test-Path -LiteralPath $cfgPath) {
-    try { $cfg = Get-Content -LiteralPath $cfgPath -Encoding UTF8 -Raw | ConvertFrom-Json } catch { $cfg = $null }
-    if ($null -ne $cfg -and $TimeoutSeconds -eq 0) { $timeout = $cfg.steps.$Step.timeout_seconds }
+
+function Invoke-Runner([string]$pf, [string]$od) {
+    $extra = @{ PromptFile = $pf; WorkspaceDir = $WorkspaceDir; OutDir = $od; TimeoutSeconds = $TimeoutSeconds }
+    if ($b.agent -eq "claude") { $extra["Step"] = $Step; $extra["Permissions"] = $b.permission_mode }
+    $lines = & $runner @extra 2>&1
+    $m = ($lines | Select-String -Pattern '^EXIT_CODE=(-?\d+)\s*' | Select-Object -First 1)
+    $ec = if ($m) { [int]($m.Matches[0].Groups[1].Value) } else { -1 }
+    return [pscustomobject]@{ ExitCode = $ec; Output = $lines }
 }
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-# F-A-06：拆分契约输出——供编排层把子项落为独立工作包（唯一逻辑源见 core-logic §4b/§6b）
-if ($SplitOf) {
-    Write-Output "SPLIT=child-of-$SplitOf"
-    Write-Output "   子项须独立完成 Step1→4；子项 Step4 需调整则按 core-logic §6b 回 Step2 迭代"
-}
-# 分派
-switch ($agent) {
-    "claude" {
-        if ($Step -notin @("step1","step2","step3")) { Fail-Cli "claude runner only supports step1/2/3" }
-        $defaultT = if ($Step -eq "step3") { 300 } else { 120 }
-        & (Join-Path $scriptDir "run_claude_step12.ps1") -Step $Step -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{$defaultT})
+
+function Merge-Evidence([string]$od, [int]$ec, [string]$status, [int]$att, [string]$parent) {
+    # 动态发现真实 output 路径：step4 reviewer 类产物 → stepN-review.md；其它 stepN-output.md
+    $candidates = @("$Step-review.md", "$Step-output.md")
+    $realOutput = $null
+    foreach ($c in $candidates) {
+        $p = Join-Path $od $c
+        if (Test-Path -LiteralPath $p) { $realOutput = $p; break }
     }
-    "codex" {
-        if ($Step -ne "step4") { Fail-Cli "codex runner only supports step4" }
-        & (Join-Path $scriptDir "run_codex_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{180})
-    }
-    "mimo" {
-        if ($Step -ne "step4") { Fail-Cli "mimo runner only supports step4" }
-        & (Join-Path $scriptDir "run_mimo_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{180})
-    }
-    "kimi" {
-        if ($Step -ne "step4") { Fail-Cli "kimi runner only supports step4" }
-        & (Join-Path $scriptDir "run_kimi_step4.ps1") -PromptFile $PromptFile -WorkspaceDir $WorkspaceDir -OutDir $OutDir -TimeoutSeconds $(if($timeout){$timeout}else{180})
-    }
-    "opencode-sub" {
-        # 仅当 binding-lock 显式绑定 opencode-sub 时命中；默认绑定为 claude/codex，此分支不触发。
-        # 权威分派契约：主 agent 必须消费此信号并改用 Task 调度对应 subagent。
-        # 出口码 99 区别于正常完成 0——若主 agent 未消费（忽略输出），应视为未完成而非成功。
-        $subagent = switch ($Step) {
-            "step1" { "harness-auditor" }
-            "step2" { "harness-planner" }
-            "step3" { "harness-implementer" }
-            "step4" { "harness-verifier" }
-            default { Fail-Cli "Unknown step for opencode-sub: $Step" }
+    # 读取 runner 既有 evidence.json 作底（如存在），缺则空对象
+    $runnerEvFile = Join-Path $od "evidence.json"
+    $base = if (Test-Path -LiteralPath $runnerEvFile) {
+        try { Get-Content -LiteralPath $runnerEvFile -Encoding UTF8 -Raw | ConvertFrom-Json } catch { [pscustomobject]@{} }
+    } else { [pscustomobject]@{} }
+    # 合并：orchestrator 覆盖 schema/step/attempt/agent/exit/status/split_parent/output_files/timestamp；保留 base 的 binding_snapshot / warnings
+    $merged = [ordered]@{
+        schema_version   = 1
+        task_id          = (Split-Path -Leaf $WorkspaceDir)
+        step             = $Step
+        attempt          = $att
+        agent            = $b.agent
+        exit_code        = $ec
+        status           = $status
+        split_parent     = $parent
+        output_files     = [ordered]@{
+            output    = if ($realOutput) { $realOutput } else { "<not-yet-written>" }
+            evidence  = $runnerEvFile
         }
-        Write-Output "BINDING=opencode-sub"
-        Write-Output "STEP=$Step"
-        Write-Output "SUBAGENT=$subagent"
-        exit 99
+        timestamp        = (Get-Date).ToString("o")
     }
-    default { Fail-Cli "Unknown agent '$agent' for $Step" }
+    if ($base.PSObject.Properties.Name -contains 'binding_snapshot') { $merged['binding_snapshot'] = $base.binding_snapshot }
+    if ($base.PSObject.Properties.Name -contains 'warnings' -and $base.warnings) { $merged['warnings'] = $base.warnings }
+    $merged | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $runnerEvFile -Encoding utf8
+}
+
+# 主循环：尝试 → 成功/非超时退出 → 超时则按 §4b 拆一次
+$curPrompt = $PromptFile
+$curOut = $OutDir
+$splitParent = $null
+for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    $r = Invoke-Runner $curPrompt $curOut
+    if ($r.ExitCode -eq 0) {
+        Merge-Evidence $curOut 0 "success" $attempt $splitParent
+        Write-Output "EXIT_CODE=0"; exit 0
+    }
+    if ($r.ExitCode -ne -2) {
+        Merge-Evidence $curOut $r.ExitCode "error" $attempt $splitParent
+        Write-Output "EXIT_CODE=$($r.ExitCode)"; exit $r.ExitCode
+    }
+    # EXIT_CODE=-2 超时：拆一次 prompt，分别跑两半；若任一半仍超时则 BLOCKED_SPLIT_LIMIT
+    if ($attempt -ge $MaxSplitDepth) {
+        Merge-Evidence $curOut -2 "blocked_split_limit" $attempt $splitParent
+        Write-Output "EXIT_CODE=3 status=blocked_split_limit depth=$attempt"; exit 3
+    }
+    $txt = Get-Content -LiteralPath $curPrompt -Encoding UTF8 -Raw
+    $ln = $txt -split "`r?`n"
+    if ($ln.Count -lt 4) {
+        # 已是最小粒度（< 4 行）不能再拆
+        Merge-Evidence $curOut -2 "blocked_split_limit" $attempt $splitParent
+        Write-Output "EXIT_CODE=3 status=blocked_split_limit min_granularity"; exit 3
+    }
+    $mid = [int]($ln.Count / 2)
+    $aTxt = ($ln[0..($mid-1)] -join "`n")
+    $bTxt = ($ln[$mid..($ln.Count-1)] -join "`n")
+    $sub = Join-Path $OutDir "subitems\$attempt"
+    New-Item -ItemType Directory -Path "$sub\a","$sub\b","$sub\rejected" -Force | Out-Null
+    $aTxt | Out-File -LiteralPath "$sub\a\prompt.txt" -Encoding utf8
+    $bTxt | Out-File -LiteralPath "$sub\b\prompt.txt" -Encoding utf8
+    # rejected Move-Item 使用 -Force：当前每 attempt 后立即 exit，调度器无重试路径；
+    # 若未来调度引入重试，应改为带 attempt 编号子目录以避免覆盖。
+    try { Get-ChildItem -LiteralPath $curOut -File -ErrorAction SilentlyContinue | Move-Item -Destination "$sub\rejected\" -Force } catch {}
+    $ra = Invoke-Runner "$sub\a\prompt.txt" "$sub\a"
+    if ($ra.ExitCode -eq -2) {
+        Merge-Evidence "$sub\a" -2 "blocked_split_limit" ($attempt+1) $curPrompt
+        Write-Output "EXIT_CODE=3 status=blocked_split_limit sub_a_timeout"; exit 3
+    }
+    $rb = Invoke-Runner "$sub\b\prompt.txt" "$sub\b"
+    if ($rb.ExitCode -eq -2) {
+        Merge-Evidence "$sub\b" -2 "blocked_split_limit" ($attempt+1) $curPrompt
+        Write-Output "EXIT_CODE=3 status=blocked_split_limit sub_b_timeout"; exit 3
+    }
+    # 两半都未超时 → 合并为 split_success
+    $worse = if ($ra.ExitCode -ne 0) { $ra.ExitCode } else { $rb.ExitCode }
+    $status = if ($worse -eq 0) { "split_success" } else { "split_partial" }
+    Merge-Evidence $OutDir $worse $status $attempt $curPrompt
+    Write-Output "EXIT_CODE=$worse"
+    exit $worse
 }
