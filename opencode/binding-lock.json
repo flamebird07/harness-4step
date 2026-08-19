@@ -5,10 +5,17 @@
     "step1": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
     "step2": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
     "step3": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
-    "step4": { "agent": "mimo",   "model": "xiaomi/mimo-v2.5-pro", "permission_mode": "default" }
+    "step4": { "agent": "opencode-sub", "model": null, "permission_mode": "default" }
   },
   "constraints": {
     "step4_must_differ_from_step3_family": true
   },
-  "authorization_log": []
+  "authorization_log": [
+    {
+      "at": "2026-08-19T15:40:00+08:00",
+      "step": "step4",
+      "agent": "opencode-sub",
+      "authorization": "用户显式授权：step4 改用 opencode 自带 agent（harness-verifier）"
+    }
+  ]
 }

@@ -33,10 +33,15 @@ $runner = switch ($b.agent) {
     "mimo"   { Join-Path $PSScriptRoot $(if ($Step -eq "step4") { "run_mimo_step4.ps1" } else { "run_mimo_step3.ps1" }) }
     "codex"  { Join-Path $PSScriptRoot "run_codex_step4.ps1" }
     "kimi"   { Join-Path $PSScriptRoot "run_kimi_step4.ps1" }
+    "opencode-sub" { "" }  # 无 runner 脚本：主 agent 用 Task 调 subagent（harness-auditor/planner/implementer/verifier）
     default  { throw "unknown agent in binding-lock.json: $($b.agent)" }
 }
 
 function Invoke-Runner([string]$pf, [string]$od) {
+    if ($b.agent -eq "opencode-sub") {
+        # 主 agent 用 Task 调 subagent：输出 BINDING=opencode-sub + exit 99 让调度者接管
+        return [pscustomobject]@{ ExitCode = 99; Output = @("BINDING=opencode-sub", "EXIT_CODE=99") }
+    }
     $extra = @{ PromptFile = $pf; WorkspaceDir = $WorkspaceDir; OutDir = $od; TimeoutSeconds = $TimeoutSeconds }
     if ($b.agent -eq "claude") { $extra["Step"] = $Step; $extra["Permissions"] = $b.permission_mode }
     $lines = & $runner @extra 2>&1
@@ -120,7 +125,13 @@ if ($lines0.Count -gt $prechunkTrigger) {
     $splitParent = $PromptFile
 }
 for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    New-Item -ItemType Directory -Path $curOut -Force | Out-Null
     $r = Invoke-Runner $curPrompt $curOut
+    if ($r.ExitCode -eq 99) {
+        # opencode-sub 分派：主 agent 接管（Task 调 subagent），不在此写 evidence
+        Write-Output "EXIT_CODE=99"
+        exit 99
+    }
     if ($r.ExitCode -eq 0) {
         $status = "success"
         if ($Step -eq "step4" -and $b.agent -eq "mimo") {

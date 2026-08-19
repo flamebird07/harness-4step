@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.22
+version: 13.0.23
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.22 — mimo CLI 通信修复 + 三平台一致)
+# Harness 4-Step Method (v13.0.23 — step4 支持 opencode-sub + 三平台一致)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -755,6 +755,12 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.23 (2026-08-19)
+
+- **违规7 修复（step4 支持 opencode-sub）**：step4 绑定由 mimo CLI 改为 `harness-verifier` subagent（opencode-sub），用户显式授权记录于 opencode/binding-lock.json authorization_log；run_step.ps1 增加 opencode-sub 分派（EXIT_CODE=99 让调度者接管），解决 mimo runner 在 bash 工具层 hang 导致 step4 无法真实执行的问题。
+- **mimo runner 根因修复（F-MIMO-ROOTFIX）**：直接启动 node.exe + bin/mimo，绕过 .ps1 shim 与 powershell.exe 层，消除三层管道死锁（bash→PS→node）与 -InputFormat XML 对 stdin 语义的破坏；stdin 改 UTF-8 字节直写（`BaseStream.Write(UTF8.GetBytes())`，PS 5.1 无 StandardInputEncoding 属性）。
+- **violations.log 流程落实**：违规7 用 `manage_binding.ps1 -RecordViolation` 记录到仓库 docs/violations.log（core-logic §8）。
 
 ### v13.0.22 (2026-08-17)
 

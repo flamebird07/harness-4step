@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.22
+version: 13.0.23
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.22（三平台版本对齐）
+# 四步法 Harness（opencode 适配层）v13.0.23
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -14,7 +14,7 @@ version: 13.0.22
 
 | 维度 | Hermes 适配层 | opencode 适配层（本文件） |
 |------|--------------|---------------------------|
-| 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | Task 调度 `harness-*` subagent（step1-3）+ bash 调 codex CLI（step4） |
+| 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | Task 调度 `harness-*` subagent（step1-3）+ `harness-verifier` subagent（step4，opencode-sub）；mimo/codex CLI 为备用路径 |
 | 反绕过 | `plugin/four-step-enforcer` | subagent `permission: edit: deny`（系统级） |
 | 队列/超时/拆分 | Hermes 专属机制 | 不复制，opencode 用任务清单+估算即可 |
 
@@ -24,10 +24,10 @@ version: 13.0.22
 - **step1 = `claude` agent**（主模型，`permission_mode: default`）
 - **step2 = `claude` agent**（主模型，`permission_mode: default`）
 - **step3 = `claude` agent**（主模型，`permission_mode: bypassPermissions`）——通过 bash 调 `opencode/scripts/run_claude_step12.ps1 -Step step3` 执行
-- **step4 = mimo CLI（外部独立模型族）**——model `xiaomi/mimo-v2.5-pro`，`permission_mode: default`，通过 bash 调 `opencode/scripts/run_mimo_step4.ps1` 执行
-- 备用：mimo 认证失效时临时切 codex CLI（`opencode/scripts/run_codex_step4.ps1`），需用户显式授权
+- **step4 = `harness-verifier` subagent（opencode-sub）**——`permission_mode: default`，主 agent 用 Task 调 subagent（`opencode/agents/harness-verifier.md`），run_step.ps1 输出 `EXIT_CODE=99` 让调度者接管
+- 备用：mimo CLI（`opencode/scripts/run_mimo_step4.ps1`）或 codex CLI（`opencode/scripts/run_codex_step4.ps1`），认证失效/需外部模型族时经用户显式授权临时切换
 
-**核心约束（不可违反）**：Step 4 复审必须与 Step 3 使用不同模型族（step4 为外部 CLI，step1-3 为主模型，天然满足）。
+**核心约束（不可违反）**：Step 4 复审必须与 Step 3 使用不同模型族（step4 为 `harness-verifier` subagent/opencode-sub 或外部 CLI，step1-3 为主模型，天然满足）。
 绑定以机器可校验锁文件 `binding-lock.json` 为准（字段子集与 Hermes 端 schema 兼容）。`locked=false` 或 step3/step4 模型族相同 → orchestrator fail-closed 拒绝启动。runner 不直接接收 Step 0。
 
 ## 角色与权限映射
@@ -37,12 +37,12 @@ version: 13.0.22
 | 1 | 审查 | `harness-auditor` subagent | edit: deny | 只找问题，不写方案（P 编号） |
 | 2 | 方案 | `harness-planner` subagent | edit: deny | 只写计划（F-<P编号> + before/after） |
 | 3 | 执行 | **mimo CLI**（`opencode/scripts/run_mimo_step3.ps1`，edit: allow） | 严格按方案改，不分析 |
-| 4 | 复审 | **codex CLI**（playbook: `opencode/scripts/run_codex_step4.ps1`） | 只读验证天然隔离（read-only sandbox） | 独立验证（读实际代码 + 跑回归） |
+| 4 | 复审 | **`harness-verifier` subagent**（opencode-sub，`opencode/agents/harness-verifier.md`） | edit: deny（只读） | 独立验证（读实际代码 + 跑回归） |
 
 - step1-3 每次 Task 调用都是**全新独立上下文**，只传问题描述/上一步产物，**不传主 agent 的分析结论**。
-- step4 由主 agent 用 bash 调 codex CLI，独立进程独立上下文。
+- step4 由主 agent 用 Task 调 `harness-verifier` subagent（binding=opencode-sub），独立上下文；mimo/codex CLI 为备用路径。
 
-## codex CLI 调用规范（step4 当前绑定）
+## codex CLI 调用规范（step4 备用路径，仅 mimo 认证失效且用户授权时使用）
 
 ```powershell
 # 把复审 prompt 写入 .harness/<task>/step4-prompt.txt 后执行：
@@ -117,7 +117,7 @@ version: 13.0.22
 3. **Step 2** `harness-planner`：入参 = 问题清单 → `step2-plan.md`（F-<P编号>）。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
 5. **Step 3** 执行：把方案写入 `step3-prompt.txt` → 调 `opencode/scripts/run_mimo_step3.ps1`（stdin 管道喂 prompt，见"mimo CLI 调用规范（step3）"）→ 读 `step3/step3-output.md`。执行后对比基线验无方案外改动。
-6. **Step 4** **codex CLI**：入参 = 修改后代码绝对路径 + step1 问题清单 → 写 `step4-prompt.txt` → 调 `opencode/scripts/run_codex_step4.ps1` → 读取 `step4/step4-review.md`，评级 `通过`/`需调整`。
+6. **Step 4** **`harness-verifier` subagent（opencode-sub）**：入参 = 修改后代码绝对路径 + step1 问题清单 → 主 agent 用 Task 调 `harness-verifier` → 读取 `step4/step4-review.md`，评级 `通过`/`需调整`。若绑定为 mimo/codex CLI，则对应调 `run_mimo_step4.ps1` / `run_codex_step4.ps1`。
 7. **循环**：`需调整` → 回 Step 2（只处理未通过的 P + 新阻塞；入参加挂上轮复审）。Step 1 只做一次。上限默认 3 次（可配置到 10，见 shared/core-logic.md §6），超限汇报未解决问题。
 
 ## 硬性规则（主 agent）
@@ -134,6 +134,11 @@ version: 13.0.22
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.23 (2026-08-19)
+- **违规7 修复（step4 改用 opencode-sub）**：step4 绑定由 mimo CLI 改为 `harness-verifier` subagent（opencode-sub），用户显式授权记录于 binding-lock.json authorization_log；run_step.ps1 增加 opencode-sub 分派（EXIT_CODE=99）。
+- **mimo runner 根因修复（F-MIMO-ROOTFIX）**：直接启动 node.exe + bin/mimo，绕过 .ps1 shim 与 powershell.exe 层，消除三层管道死锁与 -InputFormat XML 对 stdin 语义的破坏；stdin 改 UTF-8 字节直写（PS 5.1 无 StandardInputEncoding）。
+- **violations.log 流程落实**：违规7 用 manage_binding.ps1 -RecordViolation 记录到仓库 docs/violations.log。
 
 ### v13.0.22 (2026-08-19)
 - **三平台版本对齐**：v13.0.13 → v13.0.22，与 Hermes/dsh 对齐；发布前跑 `check_version_consistency.py` 强制三平台版本一致。

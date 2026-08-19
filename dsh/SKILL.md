@@ -1,10 +1,10 @@
 ---
 name: harness-4step
 description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（vision-reviewer：mimo CLI + 视觉模型看图，shared/core-logic.md §11，DSH 与 opencode 支持、Hermes 自带视觉不触发）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.22
+version: 13.0.23
 ---
 
-# 四步法 Harness（DeepSeek Harness 适配层 v13.0.22 — DSH subagent 为主 + CLI 可选）
+# 四步法 Harness（DeepSeek Harness 适配层 v13.0.23 — DSH subagent 为主 + CLI 可选）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 DSH 落地：把共享逻辑映射到 DeepSeek Harness 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -147,6 +147,7 @@ version: 13.0.22
 
 ## 版本历史
 
+- v13.0.23 (2026-08-19): 三平台版本对齐至 13.0.23（opencode 侧违规7 修复：step4 支持 opencode-sub/harness-verifier + mimo runner 根因修复 + UTF-8 stdin 字节直写）。版本号 13.0.22 → 13.0.23。
 - v13.0.22 (2026-08-15): 视觉审查**封装进四步法**（shared/core-logic.md §11）——由"独立能力"改为"四步法内部跨步视觉兜底"：当 step1/step3/step4 需要视觉判断且该步后端无视觉时触发，视觉结论作为该步输入佐证；共享 runner 移至 `opencode/scripts/run_vision_review.ps1`（DSH 经 `../../opencode/scripts/` 引用，与 CLI runner 共享模式一致）；vision-reviewer 模板更新定位与调用路径。opencode 适配层同步支持；Hermes 自带视觉不触发。版本号 13.0.21 → 13.0.22。
 - v13.0.21 (2026-08-15): 新增**独立视觉审查能力**（不属于四步法）——`dsh/scripts/run_vision_review.ps1`（经 mimo CLI `-f` 附加多图给视觉模型 `xiaomi/mimo-v2.5` 看图，输出 `vision-review.md`）+ `dsh/agents/vision-reviewer.md`（独立 subagent 模板）。主模型无视觉时经此调用其他模型看图，与四步法解耦、可随时单独调用。版本号 13.0.20 → 13.0.21。
 - v13.0.20 (2026-08-14): 同步 shared/core-logic.md §2b/§2c Step 3 验证门——implementer 提示词新增 `Step 3 验证状态` 输出与验证要求；verifier 提示词读取 step3 验证状态并决定兜底只读回归；编排流程 Step 3/4 纳入验证门；违规处理对齐 §8 类别 A-E。版本号 13.0.19 → 13.0.20。

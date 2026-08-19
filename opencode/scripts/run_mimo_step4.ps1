@@ -33,12 +33,15 @@ $started = Get-Date
 # --- F-MIMO-HANG: 用 .NET 同步 Process + stdin pipe 替换 Start-Job 异步 ---
 # Start-Job + stdin pipe 在 Windows + 长 prompt 时 100% hang；
 # .NET Process 同步 stdin/stdout + WaitForExit(ms) 是稳定路径
-# PowerShell 5.1 兼容：ProcessStartInfo.Arguments 是 string（空格分隔），用双引号包裹路径
-# 注：mimo 命令实际是 ps1 脚本（mimo.Source = .ps1 路径），需通过 powershell.exe 启动
+# F-MIMO-ROOTFIX: 直接启动 node.exe + bin/mimo，绕过 .ps1 shim 与 powershell.exe 层，
+# 消除三层管道死锁（bash→PS→node）与 -InputFormat XML 对 stdin 语义的破坏
+$npmDir = Split-Path $mimo.Source -Parent
+$nodeExe = if (Test-Path (Join-Path $npmDir "node.exe")) { Join-Path $npmDir "node.exe" } else { (Get-Command node).Source }
+$mimoJs = Join-Path $npmDir "node_modules\@mimo-ai\cli\bin\mimo"
+if (-not (Test-Path -LiteralPath $mimoJs)) { throw "Cannot resolve mimo JS entry: $mimoJs" }
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = (Get-Command powershell.exe).Source
-# F-P02/F-P11/F-P12: 加 -OutputFormat XML -InputFormat XML，强制子 powershell 用 UTF-8 透传（避免 GBK 错码/截断）
-$psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -OutputFormat XML -InputFormat XML -File `"$($mimo.Source)`" run -m $Model --dir `"$WorkspaceDir`""
+$psi.FileName = $nodeExe
+$psi.Arguments = "`"$mimoJs`" run -m $Model --dir `"$WorkspaceDir`""
 $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
@@ -56,7 +59,10 @@ try {
     $proc.BeginOutputReadLine()
     $proc.BeginErrorReadLine()
     # 现在 stdin Write 安全（双流已 drain，不会阻塞）
-    $proc.StandardInput.Write($prompt)
+    # PS 5.1 无 StandardInputEncoding 属性（.NET Core 才有），必须字节直写 UTF-8 保障中文 prompt 不乱码
+    $utf8 = [System.Text.Encoding]::UTF8
+    $bytes = $utf8.GetBytes($prompt)
+    $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
     $proc.StandardInput.Close()
     # --- F-MIMO-HANG: WaitForExit 之后再读 buffer ---
     # WaitForExit(ms) 是 .NET 提供的唯一带超时机制的退出检测
