@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.13
+version: 13.0.22
 ---
 
-# 四步法 Harness（opencode 适配层）
+# 四步法 Harness（opencode 适配层）v13.0.22（三平台版本对齐）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -20,13 +20,12 @@ version: 13.0.13
 
 ## 后端绑定（当前锁定配置）
 
-**绑定来源**：opencode 侧的绑定即下表（subagent + 外部 CLI 混合），变更必须用户显式授权；不依赖 Hermes 的 `~/.hermes/binding-lock.json`。当前绑定：
-- **step1 = `harness-auditor` subagent**（主模型，edit: deny）
-- **step2 = `harness-planner` subagent**（主模型，edit: deny）
-- **step3 = mimo CLI（外部独立进程）**——通过 bash 调 `opencode/scripts/run_mimo_step3.ps1` 执行（edit: allow，`--dangerously-skip-permissions`）
-  - 备用：opencode `harness-implementer` subagent（主模型，edit: allow）
-- **step4 = codex CLI（外部独立模型族）**——通过 bash 调 `opencode/scripts/run_codex_step4.ps1` 执行
-- 备用：mimo CLI 已配好 `opencode/scripts/run_mimo_step4.ps1`（认证失效时临时切换，需用户授权）
+**绑定来源**：opencode 侧的绑定以机器可校验锁文件 `binding-lock.json` 为准。当前绑定：
+- **step1 = `claude` agent**（主模型，`permission_mode: default`）
+- **step2 = `claude` agent**（主模型，`permission_mode: default`）
+- **step3 = `claude` agent**（主模型，`permission_mode: bypassPermissions`）——通过 bash 调 `opencode/scripts/run_claude_step12.ps1 -Step step3` 执行
+- **step4 = mimo CLI（外部独立模型族）**——model `xiaomi/mimo-v2.5-pro`，`permission_mode: default`，通过 bash 调 `opencode/scripts/run_mimo_step4.ps1` 执行
+- 备用：mimo 认证失效时临时切 codex CLI（`opencode/scripts/run_codex_step4.ps1`），需用户显式授权
 
 **核心约束（不可违反）**：Step 4 复审必须与 Step 3 使用不同模型族（step4 为外部 CLI，step1-3 为主模型，天然满足）。
 绑定以机器可校验锁文件 `binding-lock.json` 为准（字段子集与 Hermes 端 schema 兼容）。`locked=false` 或 step3/step4 模型族相同 → orchestrator fail-closed 拒绝启动。runner 不直接接收 Step 0。
@@ -133,3 +132,10 @@ version: 13.0.13
 越权修改文件：用 `baseline.diff`/备份精确回退 → 从违规点重走 → 记录到 `violations.log`。
 
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
+
+## 版本历史（Version History）
+
+### v13.0.22 (2026-08-19)
+- **三平台版本对齐**：v13.0.13 → v13.0.22，与 Hermes/dsh 对齐；发布前跑 `check_version_consistency.py` 强制三平台版本一致。
+- **绑定表对齐 binding-lock.json**：step1/2/3=claude、step4=mimo 与机器可校验锁文件一致，消除 SKILL.md 声明漂移。
+- **mimo hang 修复同步**：run_mimo_step3/4.ps1 改用 async drain（ProcessStartInfo + Output/ErrorDataReceived + UTF-8 + stdin 喂 prompt），消除管道死锁。

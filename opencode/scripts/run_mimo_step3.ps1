@@ -26,27 +26,56 @@ if (-not $prompt) { throw "Prompt file is empty" }
 $rawFile = Join-Path $OutDir "mimo_step3_raw.txt"
 $msgFile = Join-Path $OutDir "step3-output.md"
 
+# F-P05/F-P10: 删除原 prompt 字符清理段（stdin 路径下不经过 argv 拆词，清理纯损语义）
+# 注：argv 路径下的字符拆词风险由 F-P01（事件驱动 async drain）+ F-P02（套娃保留 + UTF-8）共同避免
+
 $started = Get-Date
-# --dangerously-skip-permissions lets the implementer edit files (Step 3 role).
-$job = Start-Job -ScriptBlock {
-    param($Prompt, $Exe, $Model, $WorkspaceDir)
-    $OutputEncoding = [System.Text.Encoding]::UTF8
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    # Feed the prompt via stdin instead of argv: long prompts break Windows argv
-    # parsing (same as kimi). mimo.ps1 forwards pipeline input to the message.
-    $out = $Prompt | & $Exe run -m $Model --dir $WorkspaceDir --dangerously-skip-permissions 2>&1
-    [pscustomobject]@{ Exit = $LASTEXITCODE; Out = $out }
-} -ArgumentList $prompt, $mimo.Source, $Model, $WorkspaceDir
-if (Wait-Job $job -Timeout $TimeoutSeconds) {
-    $result = Receive-Job $job
-    $exitCode = if ($null -ne $result.Exit) { [int]$result.Exit } else { -1 }
-    $output = @($result.Out)
-} else {
-    Stop-Job $job
-    $exitCode = -2
-    $output = @("TIMEOUT after ${TimeoutSeconds}s")
+# --- F-MIMO-HANG: 用 .NET 同步 Process + stdin pipe 替换 Start-Job 异步 ---
+# PowerShell 5.1 兼容：ProcessStartInfo.Arguments 是 string（空格分隔），用双引号包裹路径
+# mimo 是 ps1 脚本，需通过 powershell.exe 启动
+$psi = [System.Diagnostics.ProcessStartInfo]::new()
+$psi.FileName = (Get-Command powershell.exe).Source
+# F-P02/F-P11/F-P12: 加 -OutputFormat XML -InputFormat XML，强制子 powershell 用 UTF-8 透传（避免 GBK 错码/截断）
+$psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -OutputFormat XML -InputFormat XML -File `"$($mimo.Source)`" run -m $Model --dir `"$WorkspaceDir`" --dangerously-skip-permissions"
+$psi.RedirectStandardInput = $true
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+
+$proc = [System.Diagnostics.Process]::Start($psi)
+try {
+    # F-P01/F-P09: 关键顺序——先启动 async drain 双流，再 Write stdin
+    # 避免对端 stdout/stderr 满 4KB 时 mimo 阻塞 → stdin 写端阻塞 → 死锁
+    $script:outBuf = ""
+    $script:errBuf = ""
+    $proc.add_OutputDataReceived({ if ($EventArgs.Data) { $script:outBuf += $EventArgs.Data + "`n" } })
+    $proc.add_ErrorDataReceived({ if ($EventArgs.Data) { $script:errBuf += $EventArgs.Data + "`n" } })
+    $proc.BeginOutputReadLine()
+    $proc.BeginErrorReadLine()
+    # 现在 stdin Write 安全（双流已 drain，不会阻塞）
+    $proc.StandardInput.Write($prompt)
+    $proc.StandardInput.Close()
+    # --- F-MIMO-HANG: WaitForExit 之后再读 buffer ---
+    # WaitForExit(ms) 是 .NET 提供的唯一带超时机制的退出检测
+    # async drain 已把数据收进 $script:outBuf/$script:errBuf，不再用同步 ReadToEnd
+    $exited = $proc.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $exited) {
+        try { $proc.Kill() } catch {}
+        try { $proc.WaitForExit(5000) } catch {}
+        $exitCode = -2
+        $output = @("TIMEOUT after ${TimeoutSeconds}s")
+    } else {
+        $exitCode = $proc.ExitCode
+        # F-P03: WaitForExit 后给事件循环 200ms 排空最后数据，再读 buffer
+        Start-Sleep -Milliseconds 200
+        $output = @()
+        if ($script:outBuf) { $output += $script:outBuf.Split("`n") }
+        if ($script:errBuf) { $output += $script:errBuf.Split("`n") }
+    }
+} finally {
+    $proc.Dispose()
 }
-Remove-Job $job -Force
 $elapsed = ((Get-Date) - $started).TotalSeconds
 
 $output | Out-File -LiteralPath $rawFile -Encoding utf8

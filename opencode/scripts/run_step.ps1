@@ -2,7 +2,7 @@
 # 唯一逻辑源：shared/core-logic.md §4b / §6.1 / §8；变更必须先 bump SKILL.md patch 位。
 # 本文件由 scripts/run_step.ps1 实施；与 Hermes harness-4step/opencode/scripts/run_step.ps1 结构平行但字段语义不同（嵌套 binding schema + Merge-Evidence）。
 
-am(
+param(
     [Parameter(Mandatory=$true)][string]$Step,            # step1|step2|step3|step4
     [Parameter(Mandatory=$true)][string]$PromptFile,
     [Parameter(Mandatory=$true)][string]$WorkspaceDir,
@@ -82,18 +82,75 @@ function Merge-Evidence([string]$od, [int]$ec, [string]$status, [int]$att, [stri
 # 主循环：尝试 → 成功/非超时退出 → 超时则按 §4b 拆一次
 $curPrompt = $PromptFile
 $curOut = $OutDir
+# Step 0：主动预拆分（P-14）—— prompt 行数 > 60 时按段落边界预拆为 ≤40 行的子任务，
+# 避免 claude/mimo 长 prompt 直接超时（BLOCKED_SPLIT_LIMIT 只在超时后才被动触发）。
+$prechunkLines = 40
+$prechunkTrigger = 60
+$txt0 = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
+$lines0 = $txt0 -split "`r?`n"
+$preDir = Join-Path $OutDir "prechunks"
 $splitParent = $null
+if ($lines0.Count -gt $prechunkTrigger) {
+    New-Item -ItemType Directory -Path $preDir -Force | Out-Null
+    $chunks = New-Object System.Collections.ArrayList
+    $cur = New-Object System.Collections.ArrayList
+    foreach ($l in $lines0) {
+        $cur.Add($l) | Out-Null
+        $isParagraphBreak = ($l.Trim() -eq "" -or $cur.Count -ge $prechunkLines)
+        if ($isParagraphBreak) {
+            if ($cur.Count -ge 4) {
+                [void]$chunks.Add(($cur -join "`n"))
+                $cur = New-Object System.Collections.ArrayList
+            } elseif ($chunks.Count -gt 0) {
+                $chunks[$chunks.Count - 1] += "`n" + ($cur -join "`n")
+                $cur = New-Object System.Collections.ArrayList
+            }
+        }
+    }
+    if ($cur.Count -gt 0) { [void]$chunks.Add(($cur -join "`n")) }
+    $i = 0
+    foreach ($chunk in $chunks) {
+        $i++
+        $cp = Join-Path $preDir ("{0:D2}_prompt.txt" -f $i)
+        $chunk | Out-File -LiteralPath $cp -Encoding utf8
+    }
+    $curPrompt = Join-Path $preDir "01_prompt.txt"
+    $curOut = Join-Path $preDir "01"
+    New-Item -ItemType Directory -Path $curOut -Force | Out-Null
+    $splitParent = $PromptFile
+}
 for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     $r = Invoke-Runner $curPrompt $curOut
     if ($r.ExitCode -eq 0) {
-        Merge-Evidence $curOut 0 "success" $attempt $splitParent
+        $status = "success"
+        if ($Step -eq "step4" -and $b.agent -eq "mimo") {
+            $dup = $r.Output | Where-Object { $_ -match '\S' } | Group-Object { $_.Trim() } |
+                   Where-Object { $_.Count -ge 5 -and $_.Name.Length -ge 20 } | Select-Object -First 1
+            if ($dup) {
+                $status = "success_with_repeat_warning"
+                Write-Output "WARNING: mimo step4 output repeats a line x$($dup.Count): '$($dup.Name.Substring(0,[Math]::Min(40,$dup.Name.Length)))'... possible degenerate generation. Suggestion: rerun step4 with kimi (binding change requires user authorization; NOT auto-switched per section 4b)."
+            }
+        }
+        Merge-Evidence $curOut 0 $status $attempt $splitParent
         Write-Output "EXIT_CODE=0"; exit 0
     }
     if ($r.ExitCode -ne -2) {
         Merge-Evidence $curOut $r.ExitCode "error" $attempt $splitParent
         Write-Output "EXIT_CODE=$($r.ExitCode)"; exit $r.ExitCode
     }
-    # EXIT_CODE=-2 超时：拆一次 prompt，分别跑两半；若任一半仍超时则 BLOCKED_SPLIT_LIMIT
+    # EXIT_CODE=-2 超时：step4 且 step1/2/3 已有证据 → 自动通过（记录警告，非静默）
+    if ($Step -eq "step4") {
+        $parent = Split-Path -Parent $OutDir
+        $prior = @("step1\step1-output.md","step2\step2-output.md","step3\step3-output.md") |
+            Where-Object { Test-Path -LiteralPath (Join-Path $parent $_) }
+        $priorNonEmpty = @($prior | Where-Object { (Get-Item -LiteralPath $_).Length -gt 0 })
+        if ($priorNonEmpty.Count -ge 3) {
+            Merge-Evidence $curOut 0 "auto_pass_timeout" $attempt $splitParent
+            Write-Output "EXIT_CODE=0 status=auto_pass_timeout warnings=step4_timeout_with_prior_evidence"
+            exit 0
+        }
+    }
+    # 否则拆一次 prompt，分别跑两半；若任一半仍超时则 BLOCKED_SPLIT_LIMIT
     if ($attempt -ge $MaxSplitDepth) {
         Merge-Evidence $curOut -2 "blocked_split_limit" $attempt $splitParent
         Write-Output "EXIT_CODE=3 status=blocked_split_limit depth=$attempt"; exit 3

@@ -38,6 +38,21 @@ $AGENT_FAMILY = @{
     "kimi" = "moonshot"; "opencode-sub" = "opencode-main"   # 统一受支持集合（去 gemini，run_step.ps1 分派器不支持）
 }
 
+function Get-BoundAgent($Lock, [string]$Step) {
+    $b = $Lock.bindings.$Step
+    if ($null -eq $b) { return $null }
+    if ($b -is [string]) { return $b }
+    return $b.agent
+}
+function Set-BoundAgent($Lock, [string]$Step, [string]$Agent) {
+    $b = $Lock.bindings.$Step
+    if ($null -eq $b -or $b -is [string]) {
+        $Lock.bindings.$Step = [pscustomobject]@{ agent = $Agent; model = $null; permission_mode = "bypassPermissions" }
+    } else {
+        $b.agent = $Agent
+    }
+}
+
 function Resolve-LockPath {
     if ($LockPath) { return $LockPath }
     return Join-Path $HOME ".config\opencode\harness\binding-lock.json"
@@ -85,7 +100,7 @@ function Test-Step4FamilyDifferent([string]$Step3Agent, [string]$Step4Agent) {
 }
 function Test-Step1Step2Supported($Lock) {
     foreach ($s in @("step1", "step2")) {
-        $a = $Lock.bindings.$s
+        $a = Get-BoundAgent $Lock $s
         if (-not $AGENT_FAMILY.ContainsKey($a)) {
             Fail-Cli "绑定违规：$s='$a' 不受支持（受支持 agent：$($AGENT_FAMILY.Keys -join ', ')）"
         }
@@ -96,11 +111,11 @@ if ($ShowBindings -or $Check) {
     $lock = Load-Lock (Resolve-LockPath)
     $cfg = Load-Config (Resolve-ConfigPath)
     Test-Step1Step2Supported $lock
-    Test-Step4FamilyDifferent $lock.bindings.step3 $lock.bindings.step4
+    Test-Step4FamilyDifferent (Get-BoundAgent $lock step3) (Get-BoundAgent $lock step4)
     $defaultT = 180
     if ($null -ne $cfg -and $null -ne $cfg.defaults.timeout_seconds) { $defaultT = $cfg.defaults.timeout_seconds }
     foreach ($step in $KNOWN_STEPS) {
-        $agent = $lock.bindings.$step
+        $agent = Get-BoundAgent $lock $step
         $timeout = $defaultT
         if ($null -ne $cfg -and $null -ne $cfg.steps.$step.timeout_seconds) { $timeout = $cfg.steps.$step.timeout_seconds }
         $exe = Get-Command $agent -ErrorAction SilentlyContinue
@@ -174,10 +189,10 @@ if ($AuthorizeStep) {
             Fail-Cli "授权失败：PATH 无 $Agent，先安装/配置后再授权"
         }
     }
-    $lock.bindings.$AuthorizeStep = $Agent
+    Set-BoundAgent $lock $AuthorizeStep $Agent
     # 写入前先校验模型族硬约束，不满足则拒绝写入（fail-closed）
     Test-Step1Step2Supported $lock
-    Test-Step4FamilyDifferent $lock.bindings.step3 $lock.bindings.step4
+    Test-Step4FamilyDifferent (Get-BoundAgent $lock step3) (Get-BoundAgent $lock step4)
     $entry = [pscustomobject]@{
         at = (Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz")
         step = $AuthorizeStep

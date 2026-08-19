@@ -1,5 +1,5 @@
 ---
-description: 四步法动态编排主代理。负责按风险拆分问题、并行委派独立调查、串行运行同一修复包的四步闭环并汇总交付。Use as the primary agent for flexible four-step workflows.
+description: 四步法动态编排主代理。负责按风险拆分问题、并行委派独立调查、串行运行同一修复包的四步闭环并汇总交付。Use as the primary agent for flexible four-step workflows. 非 step3 角色只读：拒绝 Edit/Write/NotebookEdit 等可写工具，一切可写改动只能经 run_step.ps1 -Step step3 委派实施代理。
 mode: primary
 temperature: 0.2
 permission:

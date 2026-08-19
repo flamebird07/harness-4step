@@ -59,6 +59,15 @@ _DEFAULT_PRUNE_INTERVAL_SECONDS = 30
 # run_cli.py --authorize-binding-change 修改，直接改写会被 _is_binding_lock_tamper 拦截。
 _BLOCKED_TOOLS: Set[str] = {"write_file", "patch", "skill_manage"}
 
+_EDIT_FAMILY_RE = re.compile(
+    r"^(?:write_file|patch|edit|multi_edit|notebook_edit|apply_patch|multi_write_file)$",
+    re.IGNORECASE,
+)
+
+def _is_edit_family_tool(tool_name: str) -> bool:
+    """Structurally match the whole file-modifying tool family (any sibling), not enumerated names."""
+    return bool(_EDIT_FAMILY_RE.match(tool_name))
+
 def _is_run_cli_call(args: Any) -> bool:
     """Check if a terminal call is executing run_cli.py."""
     if not isinstance(args, dict):
@@ -448,11 +457,23 @@ def _on_pre_tool_call(
                 "🚫 BLOCKED by harness-4step: invoke Codex/Kimi only through "
                 "run_cli.py so the to-do state, evidence, and per-step report are recorded."
             )}
+        # node -e / node test_*.js：内联执行与调试脚本绕过 Step 3 run_cli.py，拦截并记录
+        _ntoks = _tokenize(str(args.get("command", "") or "")) if isinstance(args, dict) else []
+        if len(_ntoks) >= 2 and os.path.basename(_ntoks[0]).lower() == "node" and (
+                _ntoks[1] == "-e" or re.match(r"test_.*\.js$", _ntoks[1], re.IGNORECASE)):
+            state.blocked_count += 1
+            logger.warning("harness-4step: BLOCKED node exec (blocks=%d)", state.blocked_count)
+            return {"action": "block", "message": (
+                "BLOCKED by harness-4step: 禁止 `node -e` 内联执行或 `node test_*.js` "
+                "调试脚本——两者绕过 run_cli.py 的执行与证据链"
+            )}
         # 合法 run_cli.py 单命令放行（post_hook 仍校验成功与否）
 
     # --- write_file/patch: check Step 1 ---
-    if tool_name in _BLOCKED_TOOLS:
-        # Check exemptions
+    if _is_edit_family_tool(tool_name) or tool_name == "skill_manage":
+        # Step 3 (implementer) may edit files directly; everyone else is blocked.
+        if _is_edit_family_tool(tool_name) and state.next_step == "step3":
+            return None
         if _is_exempt(tool_name, args, state):
             return None
 

@@ -223,6 +223,22 @@ def _log_per_run_override(task_id: str, step: str, agent: str, authorization: st
         pass
 
 
+def record_violation(reason: str, detail: str) -> None:
+    """core-logic §8: append a timestamped violation entry (best-effort, never raises)."""
+    import json as _json
+    import time as _time
+    from pathlib import Path as _Path
+    log = _Path.home() / ".hermes" / "violations.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps({"at": _time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                 "reason": reason, "detail": detail},
+                                ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def load_config(path: Path | None = None) -> HarnessConfig:
     """Load the configuration model and retain legacy root-level step overrides.
 
@@ -696,6 +712,7 @@ if __name__ == "__main__":
         r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt,
                     timeout_seconds=a.timeout, agent_override=a.agent_override)
     except BaseException as e:
+        record_violation("run_cli_raised", str(e))
         # Fallback: never orphan a step as "started". If run_cli itself raises,
         # synthesize a failed result so record_step still fires and the step closes.
         r = CliRunResult(step=a.step, agent=a.agent or "", command=[], started_at="",

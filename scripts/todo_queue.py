@@ -109,7 +109,11 @@ def split(task_id: str, parent_id: str, children: list[dict[str, Any]], reason: 
             raise ValueError(f"Duplicate to-do id: {child['id']}")
         existing.add(child["id"])
         c = dict(child); c.setdefault("depends_on", list(parent.get("depends_on", [])))
-        c.update(state="pending", loops=0, history=[{"event": "created_by_split", "parent": parent_id}])
+        inherited_history = [h for h in parent.get("history", []) if h.get("event") == "step_completed"]
+        c.setdefault("next_step", parent.get("next_step", "step1"))
+        c.setdefault("step_attempts", dict(parent.get("step_attempts", {})))
+        c.update(state="pending", loops=0,
+                 history=[{"event": "created_by_split", "parent": parent_id}] + inherited_history)
         prepared.append(c)
     parent["state"] = "split"
     # F-A-04：split() 是唯一「解套」出口——清除拆分门粘性标记，使子项可独立领取。
