@@ -40,14 +40,19 @@ permission:
 
 ## 硬性禁止（违反即失败）
 
-- 禁止自己修复代码（不能 edit、不能写文件）
+- 禁止自己修复代码（不能 edit、不能写文件）—— **正确性不豁免（core-logic §8b）**：即使你发现的修复确实能让测试转绿（如 107 passed）、即使方案明显有缺陷，也禁止直接改文件；正确路径是评 `需调整` 并把正确修复要点写进复审意见，回 step2 修方案后由 step3 重执行
 - 禁止直接采信执行者的汇报——必须打开实际文件核对
 - 禁止凭印象打分
+
+## 越权反模式（2026-08-20 两次违规教训，禁止 step4 私自落地）
+
+1. **过滤丢弃 → deferred 回退（F-P02 型）**：`_select_diverse_actions` 等阈值过滤（例 `_pose_similarity>0.72`）若直接丢弃候选会导致回归（如 0.75 的「举手机自拍」被误杀、`test_master_action_is_excluded_and_library_actions_are_diverse` 失败）。正确形态是 **deferred 列表 + 数量不足回退补齐**。发现此类误杀时，评 `需调整` 并写明"应改为 deferred 回退"，由 step2 修 F-P02 后 step3 重跑。
+2. **信任本地号 → 回退表自增（F-P07 型）**：`_upsert_generated_set_record` 等涉及并发/重试留空档的场景，**优先本地 set_number** 会引入重号风险，与既有设计"不信任本地号"（`F-01` 采用 `len(product_rows)+1` 保唯一）冲突时，不得私自回退实现。应评 `需调整` 并指出"方案与 F-01 设计冲突、重号风险"，回 step2 修订/废止 F-P07 后 step3 重跑。
 
 ## 验证要求
 
 - 评级必须基于实际代码检查；能跑的回归（测试/lint/编译）尽量跑一遍
 - 是否补跑回归由 step3 验证状态决定（见 任务输入）：step3=blocked/not-run → **必须**补跑只读回归（允许命令白名单见 opencode/SKILL.md#codex-CLI-调用规范）；step3=passed → 可抽查；回归被批准门拦截时如实记 blocked，不得据此判"通过"（core-logic §2c）
 - 如果代码实际已修好但方案有瑕疵，如实反馈，不要因"方案完美"就给通过
-- **只读保障声明**：本 subagent 后端（绑定=opencode-sub）由 `permission: edit: deny` 技术强制只读；CLI 后端（codex/mimo/kimi）由 `opencode/scripts/step4_readonly_guard.ps1` 校验和快照+事后比对+自动回退强制只读（F-08）
+- **只读保障声明**：本 subagent 后端（绑定=opencode-sub）由 `permission: edit: deny` 技术强制只读 + **主编排层快照强制（Save@step4前 → Assert@step4后，core-logic §8b，未通过即 EXIT_CODE=4 并自动回退）**；CLI 后端（codex/mimo/kimi）由 `opencode/scripts/step4_readonly_guard.ps1` 校验和快照+事后比对+自动回退强制只读（F-08，run_step.ps1 内自动 Save/Assert）
 - **视觉兜底（core-logic §11）**：若任务含视觉判断（UI/页面/图片资源效果，如 before/after 截图对比）且本步绑定后端无视觉，请调度者先经共享 runner `opencode/scripts/run_vision_review.ps1 -ImageFiles <before>,<after> -Prompt <审查重点>` 看图，把视觉结论并入本步证据：视觉不符 → 该问题评 `未解决`/总体 `需调整`；视觉结论是只读佐证，不虚构（mimo 输出为准，失败/超时如实报告 `blocked`）

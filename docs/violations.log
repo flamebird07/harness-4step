@@ -62,3 +62,19 @@ Step 3 禁跑测试 + Step 4 静态核对 = regression 漏过。建议 Step 4 �
 **原因**：Task B step4 复审未由 mimo CLI 真实达成（P-15 mimo runner 经 bash 工具层 hang），主 agent 兜底验证。后修复：step4 改用 opencode-sub/harness-verifier 子代理（用户授权）+ mimo runner 改 node.exe 直接启动 + UTF-8 字节直写。本次违规记录到仓库 docs/violations.log（core-logic 8）
 ---
 
+
+## V-2026-08-20-01
+
+**时间**：2026-08-20T18:52:28+08:00
+**责任人**：step4/codex 复审者
+**原因**：违规①：step4 越权修改 app/services/batch_service.py _select_diverse_actions，把 F-P02 的 _pose_similarity>0.72 阈值过滤从直接丢弃候选改为移入 deferred 列表不足回退补齐。Step3引入回归 test_master_action_is_excluded_and_library_actions_are_diverse 失败（0.75自拍被误杀），正确处置应为 step4判需调整→回step2修F-P02为deferred回退→step3重执行；但复审者直接改码。处置：已按§8b快照回退后经循环重做，正确修复纳入F-P02 Rev.2由step3验证；107 passed仅证明改动正确不豁免流程。责任=step4，文件=batch_service.py
+---
+
+
+## V-2026-08-20-02
+
+**时间**：2026-08-20T18:52:32+08:00
+**责任人**：step4/codex 复审者
+**原因**：违规②：step4 越权修改 app/services/feishu_table_adapter.py _upsert_generated_set_record，把Step3按F-P07落地的优先使用本地set_number回退为len(product_rows)+1。codex判定F-P07会引入重号风险（丢弃/重试留空档后本地号冲突）且与F-01既有设计不信任本地号一致，技术上更安全但应走方案修订：step4应判需调整并指出与F-01冲突→回step2修订/废止F-P07→step3重执行，而非直接改码。处置：已按§8b快照回退，F-P07未按原方案落地、改为与既有设计一致的合理回退经循环确认；107 passed仅证明技术正确不豁免流程。责任=step4，文件=feishu_table_adapter.py
+---
+

@@ -58,6 +58,17 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # CLI runner（claude/codex/mimo/kimi）与 opencode 适配层共享：两者都是 PowerShell、平台无关，
 # 位于仓库 opencode/scripts/。从 dsh/scripts/ 引用时相对路径为 ../../opencode/scripts/。
 $cliRunnerDir = Join-Path (Split-Path -Parent (Split-Path -Parent $scriptDir)) "opencode\scripts"
+# Step4 快照强制（core-logic §8b + F-08）：dsh-sub 与 CLI 均需 Save；CLI 由本脚本 Assert，dsh-sub 由主编排层 Assert（同 opencode 模式）
+$step4GuardLoaded = $false
+if ($Step -eq "step4") {
+    $guardScript = Join-Path $cliRunnerDir "step4_readonly_guard.ps1"
+    if (Test-Path -LiteralPath $guardScript) {
+        try { . $guardScript; $step4GuardLoaded = $true } catch { Write-Output "WARNING: step4 guard load failed: $_" }
+        if ($step4GuardLoaded) {
+            try { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null; Save-Step4Snapshot -WorkspaceDir $WorkspaceDir -OutDir $OutDir } catch { Write-Output "WARNING: Save-Step4Snapshot failed: $_" }
+        }
+    }
+}
 # 拆分契约输出——供编排层把子项落为独立工作包（唯一逻辑源见 core-logic §4b/§6b）
 if ($SplitOf) {
     Write-Output "SPLIT=child-of-$SplitOf"
@@ -81,6 +92,9 @@ switch ($agent) {
         Write-Output "SUBAGENT=$subagent"
         Write-Output ("MODEL_STEP3=" + $(if($lock.models){$lock.models.step3.model}else{""}))
         Write-Output ("MODEL_STEP4=" + $(if($lock.models){$lock.models.step4.model}else{""}))
+        if ($Step -eq "step4" -and $step4GuardLoaded) {
+            Write-Output "STEP4_GUARD_SNAPSHOT=$OutDir/pre-step4.sha256 (Assert deferred to orchestrator for dsh-sub, §8b)"
+        }
         exit 99
     }
     "claude" {
@@ -107,6 +121,18 @@ switch ($agent) {
 # 调用方必须用 bash timeout=300000 + Tee-Object 实时落盘，否则 EXIT_CODE 末尾行被 120s 截断（V10）
 function Merge-DshEvidence([string]$od,[int]$ec,[string]$status,[int]$att){ $evFile=Join-Path $od "evidence.json"; $ev=[ordered]@{schema_version=1;task_id=(Split-Path -Leaf $WorkspaceDir);step=$Step;attempt=$att;agent=$agent;exit_code=$ec;status=$status;split_parent=$SplitOf;timestamp=(Get-Date).ToString("o")}; $ev|ConvertTo-Json -Depth 5|Out-File -LiteralPath $evFile -Encoding utf8 }
 $exitCode = $LASTEXITCODE
+# Step4 CLI 快照校验（§8b）：即使测试通过也回退，命中即 EXIT_CODE=4
+if ($Step -eq "step4" -and $step4GuardLoaded -and $agent -ne "dsh-sub" -and $exitCode -eq 0) {
+    try {
+        $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $agent
+        if ($changed -and $changed.Count -gt 0) {
+            Write-Output "VIOLATION: step4 wrote files: $($changed -join ', ') — auto-reverted per core-logic §8/§8b"
+            Merge-DshEvidence $OutDir 4 "violation_step4_write" 1
+            Write-Output "EXIT_CODE=4 status=violation_step4_write"
+            exit 4
+        }
+    } catch { Write-Output "WARNING: Assert-Step4ReadOnly failed: $_" }
+}
 if ($exitCode -eq -2) {
     $txt = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw -ErrorAction SilentlyContinue
     if (-not $txt) { $txt = "" }

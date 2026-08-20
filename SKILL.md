@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.24
+version: 13.0.25
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.24 — V10/V11 自修复 + 三平台一致)
+# Harness 4-Step Method (v13.0.25 — Step4 越权自修复 §8b + 快照强制)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.25 (2026-08-20)
+
+- **Step4 越权自修复（§8b + 快照强制，三平台）**：针对 2026-08-20 两次 step4 越权（① `_select_diverse_actions` 把 `>0.72` 直接丢弃误杀 0.75 自拍、② `_upsert_generated_set_record` 把 `len(product_rows)+1` 改为优先本地号引入重号风险），新增 `shared/core-logic.md §8b` "正确性不豁免"原则（即使 107 passed 仍先回退、再经 需调整→step2 修方案→step3 重执行链落地），明确 F-P02 deferred 回退与 F-P07 不信任本地号两类反模式禁止 step4 私自落地；`opencode/scripts/run_step.ps1` 集成 `step4_readonly_guard.ps1` Save@step4前 / Assert@step4后（CLI 自动、opencode-sub 由编排层 assert，命中即 EXIT_CODE=4 + 自动回退），`harness-verifier.md`（opencode/DSH）与 `harness-orchestrator.md` 同步禁止豁免并纳入违规记录强制点。版本号 13.0.24 → 13.0.25。
 
 ### v13.0.24 (2026-08-20)
 

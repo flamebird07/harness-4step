@@ -99,6 +99,16 @@ Step 4 必须读取 Step 3 验证状态后决定是否补跑回归：
 2. 从违规点起重走流程
 3. **强制记录**：调 `manage_binding.ps1 -RecordViolation`（opencode 适配层）/ `run_cli.py` 对应记录（Hermes 适配层）追加到 `violations.log`（原因 + 责任人 + 时间戳）；记录是强制动作，禁止仅口头说明或跳过（触发点清单见 opencode/harness-orchestrator#违规记录强制点）
 
+### 8b. 越权修复的"正确性不豁免"原则（v13.0.25 新增 — 针对 2026-08-20 两次 step4 越权）
+
+**原则**：step4 越权修改即使"改对了、且全量测试通过"仍属违规，**不得直接保留**，必须先回退再按正规循环重做。正确性不豁免流程正义。
+
+- **保留 ≠ 豁免**：测试转绿（例 107 passed）只证明改动技术层面正确，不消除越权事实。保留论证必须经 `step4 评级需调整 → 回 step2 修方案 → step3 重执行` 的循环链重新落地；跳过循环的直接保留视为流程违规。
+- **两类典型越权反模式（禁止 step4 私自落地）**：
+  1. **过滤丢弃 → 延迟回退（F-P02 型）**：相似度/阈值过滤不得直接丢弃候选；正确形态是 `deferred 列表 + 数量不足回退补齐`。Step3 误杀候选导致的回归（如 0.75 相似度自拍被误杀、单测失败），step4 只能判 `需调整` 并在复审意见中写明"应改为 deferred 回退"，由 step2 修 F-P02 后 step3 重跑。
+  2. **信任本地号 → 回退为表自增（F-P07 型）**：并发/丢弃批次场景下重号风险与既有设计"不信任本地 set_number"冲突时，step4 不得私自把 `优先本地 set_number` 回退为 `len(product_rows)+1`。正确路径是 step4 判 `需调整` 并指出"方案与 F-01 设计冲突、存在重号风险"，回 step2 修订/废止 F-P07 后 step3 重跑。
+- **处置细化**：命中 A 类越权且改动事后被判定技术正确时，仍执行 §8 1) 回退快照 → 2) step4 产物改为 `评级: 需调整` 附带正确修复要点 → 3) 记录 violations.log 追加 `处置: 已回退，正确修复已纳入 F-<P> Rev.2 由 step3 重执行验证`。任何"保留越权改动"的捷径必须走用户显式授权的 binding/方案修订，不得由复审者单方面决定。
+
 ## 9. 终止条件
 
 任一满足即终止：
@@ -112,7 +122,7 @@ Step 4 必须读取 Step 3 验证状态后决定是否补跑回归：
 |------|--------------|-----------------|------------------------------|
 | 执行后端 | `run_cli.py` + `binding-lock.json` | bash 调 CLI（绑定由 `binding-lock.json` + `manage_binding.ps1` 管理）+ `task` 调度 subagent（备用） | DSH `subagent` 工具为主（`dsh-sub`，经 `run_step.ps1` 输出信号后由主 agent 调度）+ 可选 CLI（复用 opencode runner，经 pwsh） |
 | 配置 | `~/.hermes/binding-lock.json` + `harness-config.yaml` | `opencode/binding-lock.json`（模板）+ `harness-config` + `opencode/SKILL.md` | `~/.dsh/harness/binding-lock.json`（模板 `dsh/binding-lock.json`）+ `harness-config` + `dsh/SKILL.md` |
-| 反绕过 | `plugin/`（four-step-enforcer 插件） | 绑定 CLI：prompt 只读前缀 + 统一经 `scripts/` 脚本调用 + 事后基线回退；绑定 opencode-sub：subagent `permission: edit: deny` | 绑定 dsh-sub：提示词强制只读（DSH 无权限字段）+ 统一经 `run_step.ps1` 分派 + 事后 `git diff > baseline.diff` 回退 |
+| 反绕过 | `plugin/`（four-step-enforcer 插件） | 绑定 CLI：prompt 只读前缀 + 统一经 `scripts/` 脚本调用 + **step4 快照强制（Save/Assert，§8b）** + 事后基线回退；绑定 opencode-sub：subagent `permission: edit: deny` **+ 主编排层快照强制（Save@step4前 → Assert@step4后，§8b）** | 绑定 dsh-sub：提示词强制只读（DSH 无权限字段）+ 统一经 `run_step.ps1` 分派 + **step4 快照强制（Save/Assert，§8b）** + 事后 `git diff > baseline.diff` 回退 |
 | 模型族 | CLI 侧配置 | CLI 侧配置 / opencode-sub 固定族 | `dsh/binding-lock.json` 的 `models` 字段决定 dsh-sub 的族；step4≠step3 必须不同族（`manage_binding.ps1 -Check` 强制） |
 | 视觉审查 | **自带视觉识别，不触发**（§11） | 经共享 runner `opencode/scripts/run_vision_review.ps1`（mimo CLI + 视觉模型） | 同左（经 `../../opencode/scripts/run_vision_review.ps1`，复用共享 runner） |
 

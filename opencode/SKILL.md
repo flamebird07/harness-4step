@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.24
+version: 13.0.25
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.24
+# 四步法 Harness（opencode 适配层）v13.0.25
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -15,7 +15,7 @@ version: 13.0.24
 | 维度 | Hermes 适配层 | opencode 适配层（本文件） |
 |------|--------------|---------------------------|
 | 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | Task 调度 `harness-*` subagent（step1-3）+ `harness-verifier` subagent（step4，opencode-sub）；mimo/codex CLI 为备用路径 |
-| 反绕过 | `plugin/four-step-enforcer` | subagent `permission: edit: deny`（系统级） |
+| 反绕过 | `plugin/four-step-enforcer` | subagent `permission: edit: deny`（系统级）+ **step4 快照强制（Save@step4前 → Assert@step4后，shared/core-logic.md §8b，CLI 由 run_step.ps1 自动、opencode-sub 由编排层 assert，未通过即 EXIT_CODE=4 + 自动回退）** |
 | 队列/超时/拆分 | Hermes 专属机制 | opencode 经 `opencode/scripts/run_step.ps1` 实现超时拆分：`MaxSplitDepth=3`/`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`，见 `shared/core-logic.md §6.1` |
 
 ## 后端绑定（当前锁定配置）
@@ -122,7 +122,7 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 3. **Step 2** `harness-planner`：同上 `bash --timeout 300000 … | Tee-Object` → `step2-plan.md`（F-<P编号>），超时同 V11 立即拆分。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
 5. **Step 3** 执行：把方案写入 `step3-prompt.txt` → `bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step3 ... | Tee-Object -FilePath .harness/<task>/step3/run.log"` → 读 `step3/step3-output.md`。执行后对比基线验无方案外改动。
-6. **Step 4** **`harness-verifier` subagent（opencode-sub）**：`bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step4 ... | Tee-Object -FilePath .harness/<task>/step4/run.log"` → `step4/step4-review.md`，评级 `通过`/`需调整`。超时同样立即拆分，不得 `auto_pass_timeout` 静默转通过（已移除）。
+6. **Step 4** **`harness-verifier` subagent（opencode-sub）**：`bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step4 ... | Tee-Object -FilePath .harness/<task>/step4/run.log"`（Save@step4前）→ Task 调 `harness-verifier` → 编排层 `Assert-Step4ReadOnly`（命中即 `EXIT_CODE=4 violation_step4_write` + 自动回退，§8b 正确性不豁免）→ `step4/step4-review.md`，评级 `通过`/`需调整`。CLI 备用路径（mimo/codex）同理但 Save/Assert 均在 `run_step.ps1` 内自动完成。超时同样立即拆分，不得 `auto_pass_timeout` 静默转通过（已移除）。
 7. **循环**：`需调整` → 回 Step 2（只处理未通过的 P + 新阻塞；入参加挂上轮复审）。Step 1 只做一次。上限默认 3 次（可配置到 10，见 shared/core-logic.md §6），超限汇报未解决问题。
 
 ## 硬性规则（主 agent）
@@ -134,11 +134,15 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 
 ## 违规处理
 
-越权修改文件：用 `baseline.diff`/备份精确回退 → 从违规点重走 → 记录到 `violations.log`。
+越权修改文件（含 step4 越权）：用 `baseline.diff`/备份精确回退（step4 经 `opencode/scripts/step4_readonly_guard.ps1` 快照比对自动回退，§8b）→ 从违规点重走 → **强制记录**到 `docs/violations.log`（`manage_binding.ps1 -RecordViolation`，禁止仅口头说明）。**正确性不豁免（§8b）**：即使越权改动技术正确且测试通过（例 107 passed）仍先回退，正确修复须经 `需调整 → 回 step2 修 F-<P> → step3 重执行` 链落地；两类反模式 F-P02（阈值过滤直接丢弃→应 deferred 回退）与 F-P07（优先本地号→应 len(product_rows)+1 保唯一）禁止 step4 私自落地。
 
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.25 (2026-08-20)
+
+- **Step4 越权自修复（§8b + 快照强制）**：针对 2026-08-20 两次 step4 越权（① `_select_diverse_actions` 把 `>0.72` 直接丢弃误杀 0.75 自拍、② `_upsert_generated_set_record` 把 `len(product_rows)+1` 改为优先本地号引入重号风险），新增 `shared/core-logic.md §8b` "正确性不豁免"原则（即使 107 passed 仍先回退、再经 需调整→step2 修方案→step3 重执行链落地），明确 F-P02 deferred 回退与 F-P07 不信任本地号两类反模式禁止 step4 私自落地；`opencode/scripts/run_step.ps1` 集成 `step4_readonly_guard.ps1` Save@step4前 / Assert@step4后（CLI 自动、opencode-sub 由 `harness-orchestrator` Task 后 Assert，命中即 `EXIT_CODE=4 violation_step4_write` + 自动回退），`harness-verifier.md` 与 `harness-orchestrator.md` 同步禁止"改对了就保留"的豁免企图并纳入违规记录强制点。
 
 ### v13.0.24 (2026-08-20)
 - **V10/V11 自修复（用四步法修四步法）**：`bash --timeout 300000 + Tee-Object` 实时透传 `EXIT_CODE/ELAPSED/RAW`（F-P06/F-P07/F-P08/F-P09/F-P10/F-P15），移除 `run_step.ps1:152 auto_pass_timeout` 静默转通过（F-P01），补齐 `prechunk` 壁垒（F-P04）、递归深度感知（F-P11）、`shared/core-logic.md §6.1` 最小粒度注释（F-P05）、`dsh/scripts/run_step.ps1` 拆分闭环（F-P02），文档改“立即拆分不停下”（F-P03/F-P13/F-P14）。

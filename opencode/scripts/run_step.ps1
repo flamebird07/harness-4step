@@ -28,13 +28,25 @@ if ($Step -eq "step4" -and $lock.constraints.step4_must_differ_from_step3_family
     }
 }
 
+# Step4 只读技术强制（core-logic §8/§8b + F-08）：CLI 路径由本脚本 Save/Assert 快照自动回退并标违规；opencode-sub 路径快照由本脚本 Save、由主编排层 Assert（见 harness-orchestrator.md）
+$step4GuardLoaded = $false
+if ($Step -eq "step4") {
+    $guardScript = Join-Path $PSScriptRoot "step4_readonly_guard.ps1"
+    if (Test-Path -LiteralPath $guardScript) {
+        try { . $guardScript; $step4GuardLoaded = $true } catch { Write-Output "WARNING: step4 guard load failed: $_" }
+        if ($step4GuardLoaded) {
+            try { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null; Save-Step4Snapshot -WorkspaceDir $WorkspaceDir -OutDir $OutDir } catch { Write-Output "WARNING: Save-Step4Snapshot failed: $_" }
+        }
+    }
+}
+
 # 选择对应 runner 脚本（按 binding.agent）
 $runner = switch ($b.agent) {
     "claude" { Join-Path $PSScriptRoot "run_claude_step12.ps1" }
     "mimo"   { Join-Path $PSScriptRoot $(if ($Step -eq "step4") { "run_mimo_step4.ps1" } else { "run_mimo_step3.ps1" }) }
     "codex"  { Join-Path $PSScriptRoot "run_codex_step4.ps1" }
     "kimi"   { Join-Path $PSScriptRoot "run_kimi_step4.ps1" }
-    "opencode-sub" { "" }  # 无 runner 脚本：主 agent 用 Task 调 subagent（harness-auditor/planner/implementer/verifier）
+    "opencode-sub" { "" }  # 无 runner 脚本：主 agent 用 Task 调 subagent（harness-auditor/planner/implementer/verifier）——快照 Assert 由主编排层在 Task 返回后执行
     default  { throw "unknown agent in binding-lock.json: $($b.agent)" }
 }
 
@@ -141,9 +153,22 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     New-Item -ItemType Directory -Path $curOut -Force | Out-Null
     $r = Invoke-Runner $curPrompt $curOut
     if ($r.ExitCode -eq 99) {
-        # opencode-sub 分派：主 agent 接管（Task 调 subagent），不在此写 evidence
+        # opencode-sub 分派：主 agent 接管（Task 调 subagent），不在此写 evidence；快照已在脚本头部 Save，Assert 由主编排层在 subagent 返回后执行（harness-orchestrator.md 违规记录强制点 1）
+        Write-Output "STEP4_GUARD_SNAPSHOT=$OutDir/pre-step4.sha256 (Assert deferred to orchestrator for opencode-sub)"
         Write-Output "EXIT_CODE=99"
         exit 99
+    }
+    # Step4 CLI 路径：每次 runner 返回后立即 Assert 快照（§8b 正确性不豁免：即使测试通过也回退）
+    if ($Step -eq "step4" -and $step4GuardLoaded -and $b.agent -ne "opencode-sub") {
+        try {
+            $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $b.agent
+            if ($changed -and $changed.Count -gt 0) {
+                Write-Output "VIOLATION: step4 wrote files: $($changed -join ', ') — auto-reverted per core-logic §8/§8b (correctness does not exempt)"
+                Merge-Evidence $curOut 4 "violation_step4_write" $attempt $splitParent
+                Write-Output "EXIT_CODE=4 status=violation_step4_write"
+                exit 4
+            }
+        } catch { Write-Output "WARNING: Assert-Step4ReadOnly failed: $_" }
     }
     if ($r.ExitCode -eq 0) {
         $status = "success"
