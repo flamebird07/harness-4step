@@ -78,3 +78,11 @@ Step 3 禁跑测试 + Step 4 静态核对 = regression 漏过。建议 Step 4 �
 **原因**：违规②：step4 越权修改 app/services/feishu_table_adapter.py _upsert_generated_set_record，把Step3按F-P07落地的优先使用本地set_number回退为len(product_rows)+1。codex判定F-P07会引入重号风险（丢弃/重试留空档后本地号冲突）且与F-01既有设计不信任本地号一致，技术上更安全但应走方案修订：step4应判需调整并指出与F-01冲突→回step2修订/废止F-P07→step3重执行，而非直接改码。处置：已按§8b快照回退，F-P07未按原方案落地、改为与既有设计一致的合理回退经循环确认；107 passed仅证明技术正确不豁免流程。责任=step4，文件=feishu_table_adapter.py
 ---
 
+
+## fix-3827965907234324593-illegal-select
+
+**时间**：2026-08-20T22:30:04+08:00
+**责任人**：harness-orchestrator
+**原因**：主agent未走scripts/run_step.ps1 orchestrator，直调default.task harness-auditor/planner/implementer/verifier subagent，未校验binding-lock.json，未产生evidence.json，不受BLOCKED_SPLIT_LIMIT约束，违反SKILL.md 编排流程/裁判不能当运动员；应走run_step.ps1按binding-lock.json路由
+---
+

@@ -1,33 +1,91 @@
-{
-  "schema_version": 1,
-  "locked": true,
-  "bindings": {
-    "step1": { "agent": "opencode-sub", "model": null, "permission_mode": "bypassPermissions" },
-    "step2": { "agent": "opencode-sub", "model": null, "permission_mode": "bypassPermissions" },
-    "step3": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
-    "step4": { "agent": "opencode-sub", "model": null, "permission_mode": "default" }
-  },
-  "constraints": {
-    "step4_must_differ_from_step3_family": true
-  },
-  "authorization_log": [
-    {
-      "at": "2026-08-19T15:40:00+08:00",
-      "step": "step4",
-      "agent": "opencode-sub",
-      "authorization": "用户显式授权：step4 改用 opencode 自带 agent（harness-verifier）"
-    },
-    {
-      "at": "2026-08-20T17:07:00+08:00",
-      "step": "step1",
-      "agent": "opencode-sub",
-      "authorization": "用户显式授权：自修复V10/V11，step1改用opencode-sub因claude超时无法完成审计"
-    },
-    {
-      "at": "2026-08-20T17:07:00+08:00",
-      "step": "step2",
-      "agent": "opencode-sub",
-      "authorization": "用户显式授权：自修复V10/V11，step2改用opencode-sub因claude方案超时"
-    }
-  ]
+﻿{
+    "schema_version":  1,
+    "locked":  true,
+    "bindings":  {
+                     "step2":  {
+                                   "agent":  "claude",
+                                   "model":  null,
+                                   "permission_mode":  "default"
+                               },
+                     "step4":  {
+                                   "agent":  "opencode-sub",
+                                   "model":  null,
+                                   "permission_mode":  "default"
+                               },
+                     "step1":  {
+                                   "agent":  "opencode-sub",
+                                   "model":  null,
+                                   "permission_mode":  "default"
+                               },
+                     "step3":  {
+                                   "agent":  "claude",
+                                   "model":  null,
+                                   "permission_mode":  "bypassPermissions"
+                               }
+                 },
+    "constraints":  {
+                        "step4_must_differ_from_step3_family":  true
+                    },
+    "authorization_log":  [
+                              {
+                                  "at":  "2026-08-13T00:00:00+08:00",
+                                  "step":  "bootstrap",
+                                  "agent":  "step1/2/3=claude, step4=codex",
+                                  "authorization":  "用户显式授权：step1/2/3 用 Claude code cli（四步法会话中明确说 step1/2/3 用Claude code cli）"
+                              },
+                              {
+                                  "at":  "2026-08-17T16:05:01+08:00",
+                                  "step":  "step4",
+                                  "agent":  "mimo",
+                                  "authorization":  "用户显式授权：step4 用 mimo code cli 采用 mimo-v2.5-pro 模型"
+                              },
+                              {
+                                  "step":  "all",
+                                  "authorization":  "同步skill binding-lock：step1=codex,step2/3=claude,step4=mimo-v2.5-pro",
+                                  "agent":  "codex/claude/mimo",
+                                  "at":  "2026-08-20T11:16:59.0852964+08:00"
+                              },
+                              {
+                                  "step":  "all",
+                                  "authorization":  "同步：step1/2/3 claude, step4 codex 档口411916",
+                                  "agent":  "claude/codex",
+                                  "at":  "2026-08-20T16:30:24.6422410+08:00"
+                              },
+                              {
+                                  "at":  "2026-08-20T17:06:26+08:00",
+                                  "step":  "step1",
+                                  "agent":  "opencode-sub",
+                                  "authorization":  "用户显式授权：自修复V10/V11，step1改用opencode-sub因claude超时无法完成审计"
+                              },
+                              {
+                                  "at":  "2026-08-20T17:06:26+08:00",
+                                  "step":  "step2",
+                                  "agent":  "opencode-sub",
+                                  "authorization":  "用户显式授权：自修复V10/V11，step2改用opencode-sub因claude方案超时"
+                              },
+                              {
+                                  "step":  "all",
+                                  "authorization":  "同步 step1/4 codex, step2/3 claude",
+                                  "agent":  "codex/claude",
+                                  "at":  "2026-08-20T19:44:50.4134947+08:00"
+                              },
+                              {
+                                  "at":  "2026-08-20T22:31:54+08:00",
+                                  "step":  "step1",
+                                  "agent":  "claude",
+                                  "authorization":  "用户显式授权：codex sandbox helper缺失导致step1 read-only失败，临时切claude完成审计，走orchestrator闭环"
+                              },
+                              {
+                                  "at":  "2026-08-20T22:40:02+08:00",
+                                  "step":  "step1",
+                                  "agent":  "opencode-sub",
+                                  "authorization":  "用户显式授权：codex沙箱与claude超时均阻塞，step1切回opencode-sub走orchestrator 99分派以产出evidence"
+                              },
+                              {
+                                  "at":  "2026-08-20T22:40:03+08:00",
+                                  "step":  "step4",
+                                  "agent":  "opencode-sub",
+                                  "authorization":  "用户显式授权：codex sandbox CreateProcessWithLogonW失败，step4切opencode-sub保证只读快照与evidence闭环"
+                              }
+                          ]
 }
