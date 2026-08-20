@@ -2,8 +2,8 @@
   "schema_version": 1,
   "locked": true,
   "bindings": {
-    "step1": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
-    "step2": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
+    "step1": { "agent": "opencode-sub", "model": null, "permission_mode": "bypassPermissions" },
+    "step2": { "agent": "opencode-sub", "model": null, "permission_mode": "bypassPermissions" },
     "step3": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
     "step4": { "agent": "opencode-sub", "model": null, "permission_mode": "default" }
   },
@@ -16,6 +16,18 @@
       "step": "step4",
       "agent": "opencode-sub",
       "authorization": "用户显式授权：step4 改用 opencode 自带 agent（harness-verifier）"
+    },
+    {
+      "at": "2026-08-20T17:07:00+08:00",
+      "step": "step1",
+      "agent": "opencode-sub",
+      "authorization": "用户显式授权：自修复V10/V11，step1改用opencode-sub因claude超时无法完成审计"
+    },
+    {
+      "at": "2026-08-20T17:07:00+08:00",
+      "step": "step2",
+      "agent": "opencode-sub",
+      "authorization": "用户显式授权：自修复V10/V11，step2改用opencode-sub因claude方案超时"
     }
   ]
 }

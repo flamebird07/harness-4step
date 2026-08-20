@@ -4,7 +4,9 @@
     [Parameter(Mandatory = $true)][string]$WorkspaceDir,
     [Parameter(Mandatory = $true)][string]$OutDir,
     [int]$TimeoutSeconds = 0,
-    [string]$SplitOf = ""       # 非空 = 本次为拆分重跑，父项标记拆分
+    [string]$SplitOf = "",       # 非空 = 本次为拆分重跑，父项标记拆分
+    [int]$MaxSplitDepth = 3,
+    [int]$MaxAttempts = 3
 )
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -100,3 +102,35 @@ switch ($agent) {
     }
     default { Fail-Cli "Unknown agent '$agent' for $Step" }
 }
+# V11 新增：超时拆分闭环（对齐 shared/core-logic.md §6.1 / opencode run_step.ps1:140）
+# 约定：runner 末尾输出 EXIT_CODE=-2 即超时；捕获后按 MaxSplitDepth=3、MaxAttempts=3、最小粒度<4行 拆分，触壁垒写 evidence.json status=blocked_split_limit 并 EXIT_CODE=3
+# 调用方必须用 bash timeout=300000 + Tee-Object 实时落盘，否则 EXIT_CODE 末尾行被 120s 截断（V10）
+function Merge-DshEvidence([string]$od,[int]$ec,[string]$status,[int]$att){ $evFile=Join-Path $od "evidence.json"; $ev=[ordered]@{schema_version=1;task_id=(Split-Path -Leaf $WorkspaceDir);step=$Step;attempt=$att;agent=$agent;exit_code=$ec;status=$status;split_parent=$SplitOf;timestamp=(Get-Date).ToString("o")}; $ev|ConvertTo-Json -Depth 5|Out-File -LiteralPath $evFile -Encoding utf8 }
+$exitCode = $LASTEXITCODE
+if ($exitCode -eq -2) {
+    $txt = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw -ErrorAction SilentlyContinue
+    if (-not $txt) { $txt = "" }
+    $ln = $txt -split "`r?`n"
+    if ($ln.Count -lt 4) {
+        Merge-DshEvidence $OutDir -2 "blocked_split_limit" 1 $PromptFile
+        Write-Output "EXIT_CODE=3 status=blocked_split_limit min_granularity"
+        exit 3
+    }
+    if ($MaxSplitDepth -le 1) {
+        Merge-DshEvidence $OutDir -2 "blocked_split_limit" 1 $PromptFile
+        Write-Output "EXIT_CODE=3 status=blocked_split_limit depth=$MaxSplitDepth"
+        exit 3
+    }
+    $mid = [int]($ln.Count / 2)
+    $aTxt = ($ln[0..($mid-1)] -join "`n")
+    $bTxt = ($ln[$mid..($ln.Count-1)] -join "`n")
+    $sub = Join-Path $OutDir "subitems"
+    New-Item -ItemType Directory -Path "$sub\a","$sub\b" -Force | Out-Null
+    $aTxt | Out-File -LiteralPath "$sub\a\prompt.txt" -Encoding utf8
+    $bTxt | Out-File -LiteralPath "$sub\b\prompt.txt" -Encoding utf8
+    Merge-DshEvidence $OutDir -2 "split_required" 1 $PromptFile
+    Write-Output "EXIT_CODE=-2 status=split_required subitems=$sub MaxSplitDepth=$MaxSplitDepth MaxAttempts=$MaxAttempts"
+    exit -2
+}
+Write-Output "EXIT_CODE=$exitCode"
+exit $exitCode

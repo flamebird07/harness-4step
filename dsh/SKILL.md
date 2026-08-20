@@ -1,10 +1,10 @@
 ---
 name: harness-4step
 description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（vision-reviewer：mimo CLI + 视觉模型看图，shared/core-logic.md §11，DSH 与 opencode 支持、Hermes 自带视觉不触发）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.23
+version: 13.0.24
 ---
 
-# 四步法 Harness（DeepSeek Harness 适配层 v13.0.23 — DSH subagent 为主 + CLI 可选）
+# 四步法 Harness（DeepSeek Harness 适配层 v13.0.24 — DSH subagent 为主 + CLI 可选）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 DSH 落地：把共享逻辑映射到 DeepSeek Harness 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -69,29 +69,29 @@ version: 13.0.23
 
 ## CLI 调用规范（可选绑定：claude/codex/mimo/kimi）
 
-仅当用户显式授权把某步绑定为外部 CLI 时使用。runner 脚本与 opencode 适配层共享（仓库 `opencode/scripts/`），经 pwsh 调用：
+仅当用户显式授权把某步绑定为外部 CLI 时使用。runner 脚本与 opencode 适配层共享（仓库 `opencode/scripts/`），经 pwsh 调用；**V10 强制**：`bash --timeout 300000 + Tee-Object` 实时透传，否则 120s 截断吞没 EXIT_CODE：
 
 ```powershell
 # 绑定=claude（step1/2/3）：
-& "opencode\scripts\run_claude_step12.ps1" -Step step1 -PromptFile ".harness\<task>\step1-prompt.txt" -WorkspaceDir "<仓库根>" -OutDir ".harness\<task>\step1"
+bash --timeout 300000 -c "pwsh -File opencode/scripts/run_claude_step12.ps1 -Step step1 -PromptFile '.harness/<task>/step1-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step1' | Tee-Object -FilePath '.harness/<task>/step1/run.log'"
 # 绑定=codex（step4）：
-& "opencode\scripts\run_codex_step4.ps1" -PromptFile ".harness\<task>\step4-prompt.txt" -WorkspaceDir "<仓库或工作目录>" -OutDir ".harness\<task>\step4"
+bash --timeout 300000 -c "pwsh -File opencode/scripts/run_codex_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
 # 绑定=mimo/kimi（step4 备用）：
-& "opencode\scripts\run_mimo_step4.ps1" -PromptFile ".harness\<task>\step4-prompt.txt" -WorkspaceDir "<仓库或工作目录>" -OutDir ".harness\<task>\step4"
-& "opencode\scripts\run_kimi_step4.ps1" -PromptFile ".harness\<task>\step4-prompt.txt" -WorkspaceDir "<仓库或工作目录>" -OutDir ".harness\<task>\step4"
+bash --timeout 300000 -c "pwsh -File opencode/scripts/run_mimo_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
+bash --timeout 300000 -c "pwsh -File opencode/scripts/run_kimi_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
 ```
 
 - 主 agent 不得跳过 `dsh/scripts/run_step.ps1` 直接调 runner（`run_step.ps1` 是唯一分派入口，负责绑定校验）。
 - 详细 CLI 语义（只读前缀、超时信号、认证处理）见 `opencode/SKILL.md#claude CLI 调用规范` 等章节，两适配层共用同一套 runner。
 
-## 编排流程（主 agent）
+## 编排流程（主 agent + V10/V11 立即拆分）
 
-1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置；**必须执行** `dsh/scripts/manage_binding.ps1 -Check` 校验绑定（lock 存在且 locked、bindings 恰好 step1..step4、step3 与 step4 不同模型族），**失败即停**——校验失败即向用户报告并停止，不得继续后续步骤。
-2. **Step 1** prompt（问题+文件路径）写入 `.harness/<task>/step1-prompt.txt` → 调 `run_step.ps1 -Step step1` → 消费 `BINDING=dsh-sub` 信号，用 `subagent` 调 `harness-auditor` → 产物落为 `step1-problems.md`（P 编号）。零问题则终止报告。
-3. **Step 2** prompt（问题清单）写入 `.harness/<task>/step2-prompt.txt` → 调 `run_step.ps1 -Step step2` → 用 `subagent` 调 `harness-planner` → 产物落为 `step2-plan.md`（F-<P编号>）。只读步骤超时按 §4b 拆分优先：可拆则拆出无依赖子工作包，拆分已达最小粒度才允许显式声明降级。
+1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置；**必须执行** `bash --timeout 300000 -c "pwsh -File dsh/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"` 校验绑定（lock 存在且 locked、bindings 恰好 step1..step4、step3 与 step4 不同模型族），**失败即停**——校验失败即向用户报告并停止，不得继续后续步骤。
+2. **Step 1** prompt（问题+文件路径）写入 `.harness/<task>/step1-prompt.txt` → `bash --timeout 300000 -c "pwsh -File dsh/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"` → 消费 `BINDING=dsh-sub` 信号，用 `subagent` 调 `harness-auditor` → 产物落为 `step1-problems.md`（P 编号）。只读步骤超时 `EXIT_CODE=-2` → 立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`），不得停下汇报（V11）。零问题则终止报告。
+3. **Step 2** prompt（问题清单）写入 `.harness/<task>/step2-prompt.txt` → `bash --timeout 300000 -c "pwsh -File dsh/scripts/run_step.ps1 -Step step2 ... | Tee-Object -FilePath .harness/<task>/step2/run.log"` → 用 `subagent` 调 `harness-planner` → 产物落为 `step2-plan.md`（F-<P编号>）。超时同 V11 立即拆分。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
-5. **Step 3** prompt（F 方案清单）写入 `.harness/<task>/step3-prompt.txt` → 调 `run_step.ps1 -Step step3` → 用 `subagent` 调 `harness-implementer`（可写文件，按 models 配置模型）→ 产物落为 `step3-changes.md` + **`Step 3 验证状态` 块**（passed / blocked(<命令>/<原因>) / not-run(<原因>)，见 shared/core-logic.md §2b 验证门）。执行后对比基线验无方案外改动；**验证状态未达标（非 passed 且非显式 blocked/not-run）不得进入 Step 4 判通过**。
-6. **Step 4** 入参 = 修改后代码绝对路径 + step1 问题清单 + **step3 验证状态** → 写 `step4-prompt.txt` → 调 `run_step.ps1 -Step step4` → 用 `subagent` 调 `harness-verifier`（**与 step3 不同模型族**）→ 读取 `step4-review.md`，评级 `通过`/`需调整`。step3 验证状态 = blocked/not-run → verifier 补跑只读回归（§2c）；= failed → 复跑确认细节，据此评级 `需调整`。
+5. **Step 3** prompt（F 方案清单）写入 `.harness/<task>/step3-prompt.txt` → `bash --timeout 300000 -c "pwsh -File dsh/scripts/run_step.ps1 -Step step3 ... | Tee-Object -FilePath .harness/<task>/step3/run.log"` → 用 `subagent` 调 `harness-implementer`（可写文件，按 models 配置模型）→ 产物落为 `step3-changes.md` + **`Step 3 验证状态` 块**（passed / blocked(<命令>/<原因>) / not-run(<原因>)，见 shared/core-logic.md §2b 验证门）。执行后对比基线验无方案外改动；**验证状态未达标（非 passed 且非显式 blocked/not-run）不得进入 Step 4 判通过**。
+6. **Step 4** 入参 = 修改后代码绝对路径 + step1 问题清单 + **step3 验证状态** → 写 `step4-prompt.txt` → `bash --timeout 300000 -c "pwsh -File dsh/scripts/run_step.ps1 -Step step4 ... | Tee-Object -FilePath .harness/<task>/step4/run.log"` → 用 `subagent` 调 `harness-verifier`（**与 step3 不同模型族**）→ 读取 `step4-review.md`，评级 `通过`/`需调整`。超时同样立即拆分，不得 `auto_pass_timeout` 静默转通过。step3 验证状态 = blocked/not-run → verifier 补跑只读回归（§2c）；= failed → 复跑确认细节，据此评级 `需调整`。
 7. **循环**：`需调整` → 回 Step 2（只处理未通过的 P + 新阻塞；入参加挂上轮复审）。Step 1 只做一次。上限默认 3 次（可配置到 10，见 shared/core-logic.md §6），超限汇报未解决问题。
 
 ## 硬性规则（主 agent）
@@ -147,7 +147,13 @@ version: 13.0.23
 
 ## 版本历史
 
-- v13.0.23 (2026-08-19): 三平台版本对齐至 13.0.23（opencode 侧违规7 修复：step4 支持 opencode-sub/harness-verifier + mimo runner 根因修复 + UTF-8 stdin 字节直写）。版本号 13.0.22 → 13.0.23。
+### v13.0.24 (2026-08-20)
+
+- **V10/V11 自修复**：`bash --timeout 300000 + Tee-Object` 实时透传（F-P06/F-P15），`dsh/scripts/run_step.ps1` 补 `MaxSplitDepth=3`/`MaxAttempts=3`/`blocked_split_limit/EXIT_CODE=3` 拆分闭环（F-P02），CLI 调用与编排流程改“立即拆分不停下”（F-P06/F-P14）。版本号 13.0.23 → 13.0.24。
+
+### v13.0.23 (2026-08-19)
+
+- 三平台版本对齐至 13.0.23（opencode 侧违规7 修复：step4 支持 opencode-sub/harness-verifier + mimo runner 根因修复 + UTF-8 stdin 字节直写）。版本号 13.0.22 → 13.0.23。
 - v13.0.22 (2026-08-15): 视觉审查**封装进四步法**（shared/core-logic.md §11）——由"独立能力"改为"四步法内部跨步视觉兜底"：当 step1/step3/step4 需要视觉判断且该步后端无视觉时触发，视觉结论作为该步输入佐证；共享 runner 移至 `opencode/scripts/run_vision_review.ps1`（DSH 经 `../../opencode/scripts/` 引用，与 CLI runner 共享模式一致）；vision-reviewer 模板更新定位与调用路径。opencode 适配层同步支持；Hermes 自带视觉不触发。版本号 13.0.21 → 13.0.22。
 - v13.0.21 (2026-08-15): 新增**独立视觉审查能力**（不属于四步法）——`dsh/scripts/run_vision_review.ps1`（经 mimo CLI `-f` 附加多图给视觉模型 `xiaomi/mimo-v2.5` 看图，输出 `vision-review.md`）+ `dsh/agents/vision-reviewer.md`（独立 subagent 模板）。主模型无视觉时经此调用其他模型看图，与四步法解耦、可随时单独调用。版本号 13.0.20 → 13.0.21。
 - v13.0.20 (2026-08-14): 同步 shared/core-logic.md §2b/§2c Step 3 验证门——implementer 提示词新增 `Step 3 验证状态` 输出与验证要求；verifier 提示词读取 step3 验证状态并决定兜底只读回归；编排流程 Step 3/4 纳入验证门；违规处理对齐 §8 类别 A-E。版本号 13.0.19 → 13.0.20。

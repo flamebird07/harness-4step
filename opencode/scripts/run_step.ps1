@@ -1,4 +1,5 @@
 ﻿# Harness 4-Step orchestrator —— opencode 适配层 v13.0.13（2026-08-18）
+# V10 强制调用约定：bash 调用本脚本必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log 实时落盘；本脚本末尾才集中 Write-Output EXIT_CODE/ELAPSED/RAW，无行缓冲，120s 截断将丢失证据。
 # 唯一逻辑源：shared/core-logic.md §4b / §6.1 / §8；变更必须先 bump SKILL.md patch 位。
 # 本文件由 scripts/run_step.ps1 实施；与 Hermes harness-4step/opencode/scripts/run_step.ps1 结构平行但字段语义不同（嵌套 binding schema + Merge-Evidence）。
 
@@ -113,6 +114,17 @@ if ($lines0.Count -gt $prechunkTrigger) {
         }
     }
     if ($cur.Count -gt 0) { [void]$chunks.Add(($cur -join "`n")) }
+    # V11 壁垒：prechunk 受 MaxSplitDepth 与最小粒度约束，不得绕过 §6.1
+    if ($chunks.Count -gt $MaxSplitDepth) {
+        Merge-Evidence $OutDir -2 "blocked_split_limit" 1 $PromptFile
+        Write-Output "EXIT_CODE=3 status=blocked_split_limit prechunk_exceeds_depth=$($chunks.Count) MaxSplitDepth=$MaxSplitDepth"
+        exit 3
+    }
+    if ($chunks.Count -eq 1 -and $lines0.Count -lt 4) {
+        Merge-Evidence $OutDir -2 "blocked_split_limit" 1 $PromptFile
+        Write-Output "EXIT_CODE=3 status=blocked_split_limit min_granularity prechunk"
+        exit 3
+    }
     $i = 0
     foreach ($chunk in $chunks) {
         $i++
@@ -124,6 +136,7 @@ if ($lines0.Count -gt $prechunkTrigger) {
     New-Item -ItemType Directory -Path $curOut -Force | Out-Null
     $splitParent = $PromptFile
 }
+# 调用方已用 Tee-Object 实时透传（V10），本循环末尾 Write-Output EXIT_CODE/ELAPSED/RAW 才会增量落盘
 for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     New-Item -ItemType Directory -Path $curOut -Force | Out-Null
     $r = Invoke-Runner $curPrompt $curOut
@@ -149,18 +162,7 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         Merge-Evidence $curOut $r.ExitCode "error" $attempt $splitParent
         Write-Output "EXIT_CODE=$($r.ExitCode)"; exit $r.ExitCode
     }
-    # EXIT_CODE=-2 超时：step4 且 step1/2/3 已有证据 → 自动通过（记录警告，非静默）
-    if ($Step -eq "step4") {
-        $parent = Split-Path -Parent $OutDir
-        $prior = @("step1\step1-output.md","step2\step2-output.md","step3\step3-output.md") |
-            Where-Object { Test-Path -LiteralPath (Join-Path $parent $_) }
-        $priorNonEmpty = @($prior | Where-Object { (Get-Item -LiteralPath $_).Length -gt 0 })
-        if ($priorNonEmpty.Count -ge 3) {
-            Merge-Evidence $curOut 0 "auto_pass_timeout" $attempt $splitParent
-            Write-Output "EXIT_CODE=0 status=auto_pass_timeout warnings=step4_timeout_with_prior_evidence"
-            exit 0
-        }
-    }
+    # V11 修复：移除 step4 auto_pass_timeout 静默转 success；EXIT_CODE=-2 必须立即走 §6.1 拆分（见下方 MaxSplitDepth/最小粒度壁垒），不得 exit 0
     # 否则拆一次 prompt，分别跑两半；若任一半仍超时则 BLOCKED_SPLIT_LIMIT
     if ($attempt -ge $MaxSplitDepth) {
         Merge-Evidence $curOut -2 "blocked_split_limit" $attempt $splitParent
@@ -169,7 +171,7 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     $txt = Get-Content -LiteralPath $curPrompt -Encoding UTF8 -Raw
     $ln = $txt -split "`r?`n"
     if ($ln.Count -lt 4) {
-        # 已是最小粒度（< 4 行）不能再拆
+        # 已是最小粒度（< 4 行 ≈ 单文件，见 shared/core-logic.md §6.1）不能再拆
         Merge-Evidence $curOut -2 "blocked_split_limit" $attempt $splitParent
         Write-Output "EXIT_CODE=3 status=blocked_split_limit min_granularity"; exit 3
     }
@@ -185,18 +187,26 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     try { Get-ChildItem -LiteralPath $curOut -File -ErrorAction SilentlyContinue | Move-Item -Destination "$sub\rejected\" -Force } catch {}
     $ra = Invoke-Runner "$sub\a\prompt.txt" "$sub\a"
     if ($ra.ExitCode -eq -2) {
-        Merge-Evidence "$sub\a" -2 "blocked_split_limit" ($attempt+1) $curPrompt
-        Write-Output "EXIT_CODE=3 status=blocked_split_limit sub_a_timeout"; exit 3
+        if (($attempt+1) -ge $MaxSplitDepth) {
+            Merge-Evidence "$sub\a" -2 "blocked_split_limit" ($attempt+1) $curPrompt
+            Write-Output "EXIT_CODE=3 status=blocked_split_limit sub_a_timeout depth=$($attempt+1)"; exit 3
+        }
+        $curPrompt = "$sub\a\prompt.txt"; $curOut = "$sub\a"; $splitParent = $curPrompt
+        continue
     }
     $rb = Invoke-Runner "$sub\b\prompt.txt" "$sub\b"
     if ($rb.ExitCode -eq -2) {
-        Merge-Evidence "$sub\b" -2 "blocked_split_limit" ($attempt+1) $curPrompt
-        Write-Output "EXIT_CODE=3 status=blocked_split_limit sub_b_timeout"; exit 3
+        if (($attempt+1) -ge $MaxSplitDepth) {
+            Merge-Evidence "$sub\b" -2 "blocked_split_limit" ($attempt+1) $curPrompt
+            Write-Output "EXIT_CODE=3 status=blocked_split_limit sub_b_timeout depth=$($attempt+1)"; exit 3
+        }
+        $curPrompt = "$sub\b\prompt.txt"; $curOut = "$sub\b"; $splitParent = $curPrompt
+        continue
     }
-    # 两半都未超时 → 合并为 split_success
+    # 子项 evidence 已在 $sub\a / $sub\b 各自落盘（exit_code=-2 保留）；父 evidence 的 exit_code=$worse 不覆盖子项 -2
     $worse = if ($ra.ExitCode -ne 0) { $ra.ExitCode } else { $rb.ExitCode }
     $status = if ($worse -eq 0) { "split_success" } else { "split_partial" }
     Merge-Evidence $OutDir $worse $status $attempt $curPrompt
-    Write-Output "EXIT_CODE=$worse"
+    Write-Output "EXIT_CODE=$worse status=$status"
     exit $worse
 }

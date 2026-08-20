@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.23
+version: 13.0.24
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.23 — step4 支持 opencode-sub + 三平台一致)
+# Harness 4-Step Method (v13.0.24 — V10/V11 自修复 + 三平台一致)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -266,9 +266,9 @@ CLI execution: SSH to <host> (PowerShell转义降级 → 本地batch文件方案
 
 ## CLI Timeout Handling
 
-### 通用规则
-1. 第一次超时 -> 精简 prompt 重试一次
-2. 第二次超时 -> **执行拆分**（只读步骤按 §4b 拆分优先：生成子项；仅当已达最小粒度 BLOCKED_SPLIT_LIMIT，才允许显式声明降级路径）
+### 通用规则（V11 立即拆分，不停下汇报）
+1. 只读步骤超时（EXIT_CODE=-2 / exit 124）→ 立即走 `run_step.ps1:140` 拆分：`MaxAttempts=3`/`MaxSplitDepth=3`/`最小粒度<4行`，触壁垒才 `EXIT_CODE=3 status=blocked_split_limit` 上报；不得“精简重试后终止/汇报”
+2. 非只读步骤超时 → 精简 prompt 重试一次，再失败按验证门处理
 3. 在汇报中注明超时和处置路径
 
 ### 超时必重试规则
@@ -296,12 +296,8 @@ CLI execution: SSH to <host> (PowerShell转义降级 → 本地batch文件方案
 - 降级后仍需要验证结果
 - 降级不是跳过步骤，而是换工具完成同一件事
 
-### Step 4 超时
-**降级路径（按顺序）：**
-1. 短英文提示 + timeout 180s 重试一次
-2. 仍失败 → 报告工具不可用，不切换其他 CLI
-
-- 强制用英文简短提示
+### Step 4 超时（只读步骤，V11）
+只读步骤按 §4b 拆分优先：`EXIT_CODE=-2` → 立即拆分（`MaxSplitDepth=3`），不走“重试→报告工具不可用”；仅最小粒度/深度壁垒后按 Failure Matrix 显式声明降级。强制用英文简短提示
 
 ### 只读步骤降级红线（与 §4b 拆分优先联动）
 - step1 / step2 / step4 是只读步骤，**不设「换 CLI」降级路径**。其失败/超时处置只有两条：一次精简重试 → 拆分（见 core-logic §4b）。
@@ -400,7 +396,7 @@ Step 2: CLI timed out (exit 124, empty output)
 
 | 失败类型 | 判断依据 | 是否可重试 | 是否可降级 | 是否终止流程 |
 |---------|---------|-----------|-----------|------------|
-| **超时** | exit 124 或 timeout 异常 | 是（精简 prompt 重试 1 次） | 否（只读步骤先拆分；仅最小粒度壁垒后例外） | 否（2 次后才终止） |
+| **超时** | `EXIT_CODE=-2` 或 exit 124 | 只读步骤：否（立即拆分，不重试）／非只读：是1次精简 | 只读步骤：否（仅 BLOCKED_SPLIT_LIMIT 后显式授权降级）／非只读：是 | 否（拆分链结束前不终止；仅壁垒后终止） |
 | **空输出** | exit 0 但 stdout 为空 | 是（重试 1 次） | 否（只读步骤见 §4b 拆分优先；非只读步骤可降级） | 否（2 次后才终止） |
 | **认证失败** | HTTP 401/403、auth error | 否（直接降级） | 是（换 CLI） | 如果所有 CLI 都认证失败 |
 | **可执行文件失败** | EFTYPE、command not found、Missing dependency | 是（修复后重试） | 是（降级路径） | 如果修复也失败 |
@@ -755,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.24 (2026-08-20)
+
+- **V10/V11 自修复（用四步法修四步法）**：`bash --timeout 300000 + Tee-Object` 实时透传 `EXIT_CODE/ELAPSED/RAW`（F-P06/P-07/P-08/P-09/P-10/P-15），移除 `run_step.ps1:152 auto_pass_timeout` 静默转通过（F-P01），补齐 `prechunk` 壁垒（F-P04）、递归深度感知（F-P11）、`shared/core-logic.md §6.1` 最小粒度注释（F-P05）、`dsh/scripts/run_step.ps1` 拆分闭环（F-P02），文档改“立即拆分不停下”（F-P03/F-P13/F-P14）；通用规则与 Step4 超超时改“立即拆分”。
 
 ### v13.0.23 (2026-08-19)
 

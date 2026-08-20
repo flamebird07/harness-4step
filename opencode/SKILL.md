@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.23
+version: 13.0.24
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.23
+# 四步法 Harness（opencode 适配层）v13.0.24
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -16,7 +16,7 @@ version: 13.0.23
 |------|--------------|---------------------------|
 | 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | Task 调度 `harness-*` subagent（step1-3）+ `harness-verifier` subagent（step4，opencode-sub）；mimo/codex CLI 为备用路径 |
 | 反绕过 | `plugin/four-step-enforcer` | subagent `permission: edit: deny`（系统级） |
-| 队列/超时/拆分 | Hermes 专属机制 | 不复制，opencode 用任务清单+估算即可 |
+| 队列/超时/拆分 | Hermes 专属机制 | opencode 经 `opencode/scripts/run_step.ps1` 实现超时拆分：`MaxSplitDepth=3`/`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`，见 `shared/core-logic.md §6.1` |
 
 ## 后端绑定（当前锁定配置）
 
@@ -45,14 +45,11 @@ version: 13.0.23
 ## codex CLI 调用规范（step4 备用路径，仅 mimo 认证失效且用户授权时使用）
 
 ```powershell
-# 把复审 prompt 写入 .harness/<task>/step4-prompt.txt 后执行：
-& "opencode\scripts\run_codex_step4.ps1" `
-    -PromptFile ".harness\<task>\step4-prompt.txt" `
-    -WorkspaceDir "<仓库或工作目录>" `
-    -OutDir ".harness\<task>\step4"
+# 把复审 prompt 写入 .harness/<task>/step4-prompt.txt 后执行（V10 强制：bash 120s 截断 → 必须 timeout=300000 + Tee-Object 透传）：
+bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_codex_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
 # 产物：step4/codex_raw.jsonl（原始输出）、step4/step4-review.md（提取的 agent_message + 环境信息）
 # 路径说明：仓库内用 opencode/ 相对路径；按 opencode/README.md 安装后脚本位于 <skill 目录>/scripts/，
-# 调用对应改为 & "<skill 目录>\scripts\run_codex_step4.ps1"
+# 调用对应改为 bash --timeout 300000 -c "pwsh -File \"<skill 目录>/scripts/run_codex_step4.ps1\" -PromptFile ... | Tee-Object ..."
 ```
 
 - **连接前提**：脚本按 PATH 解析 `codex`；PATH 无 codex 时回退 `CODEX_HOME\.sandbox-bin\codex.exe`（`CODEX_HOME` 默认 `~/.ccsc/codex-mimo`，可用环境变量覆盖）。若认证失效会 401，需用户 `codex login`（或在 Codex 应用重新登录）。
@@ -64,14 +61,11 @@ version: 13.0.23
 ## mimo CLI 调用规范（step3 执行，当前绑定）
 
 ```powershell
-# 把执行 prompt 写入 .harness/<task>/step3-prompt.txt 后执行：
-& "opencode\scripts\run_mimo_step3.ps1" `
-    -PromptFile ".harness\<task>\step3-prompt.txt" `
-    -WorkspaceDir "<仓库或工作目录>" `
-    -OutDir ".harness\<task>\step3"
+# 把执行 prompt 写入 .harness/<task>/step3-prompt.txt 后执行（V10 强制：bash 120s 截断 → 必须 timeout=300000 + Tee-Object 透传）：
+bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_mimo_step3.ps1 -PromptFile '.harness/<task>/step3-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step3' | Tee-Object -FilePath '.harness/<task>/step3/run.log'"
 # 产物：step3/mimo_step3_raw.txt（原始输出）、step3/step3-output.md
 # 路径说明：仓库内用 opencode/ 相对路径；按 opencode/README.md 安装后脚本位于 <skill 目录>/scripts/，
-# 调用对应改为 & "<skill 目录>\scripts\run_mimo_step3.ps1"
+# 调用对应改为 bash --timeout 300000 -c "pwsh -File \"<skill 目录>/scripts/run_mimo_step3.ps1\" -PromptFile ... | Tee-Object ..."
 ```
 
 - **长 prompt 兼容性（关键）**：脚本用 **stdin 管道** 把 prompt 喂给 mimo，而非 argv 位置参数。Windows 上长 prompt 会破坏 mimo 的 argv 解析（与 kimi 相同），短 prompt 正常、长 prompt 报错即此问题。**不要改成 `--file`**：mimo 的 `-f/--file` 是贪婪的附件文件路径数组，会吞掉后续参数并报 `File not found`，不能用来传 prompt。
@@ -81,22 +75,34 @@ version: 13.0.23
 ## mimo CLI 调用规范（step4 备用）
 
 ```powershell
-& "opencode\scripts\run_mimo_step4.ps1" `
-    -PromptFile ".harness\<task>\step4-prompt.txt" `
-    -WorkspaceDir "<仓库或工作目录>" `
-    -OutDir ".harness\<task>\step4"
+# V10 强制：bash 120s 截断 → 必须 timeout=300000 + Tee-Object 透传
+bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_mimo_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
 # 产物：step4/mimo_raw.txt（原始输出）、step4/step4-review.md
 # 路径说明：仓库内用 opencode/ 相对路径；按 opencode/README.md 安装后脚本位于 <skill 目录>/scripts/，
-# 调用对应改为 & "<skill 目录>\scripts\run_mimo_step4.ps1"
+# 调用对应改为 bash --timeout 300000 -c "pwsh -File \"<skill 目录>/scripts/run_mimo_step4.ps1\" -PromptFile ... | Tee-Object ..."
 ```
 
 - 仅当 codex 认证失效且用户显式授权切 mimo 时使用。模型默认 `xiaomi/mimo-v2.5-pro`。
+
+## V10 强制调用约定（bash 120s 截断 → 300000+Tee-Object 透传）
+
+> **根因**：opencode bash 工具默认 `timeout=120000` 且输出超 2000 行/51200 字节截断；各 runner 末尾才集中 `Write-Output EXIT_CODE/ELAPSED/RAW/OUTPUT`，120s 前无增量落盘，导致超时 `-2` 与耗时证据被吞没，拆分链无法触发。
+
+**强制**：所有 `bash` 调 `run_step.ps1 / manage_binding.ps1 / run_claude_step12.ps1 / run_mimo_step*.ps1 / run_codex_step4.ps1 / run_vision_review.ps1` 必须：
+
+```powershell
+# PowerShell 侧用 Tee-Object 实时落盘，bash 侧用 timeout=300000
+bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_step.ps1 -Step step1 -PromptFile '.harness/<task>/step1-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step1' | Tee-Object -FilePath '.harness/<task>/step1/run.log'"
+# manage_binding 校验同理：
+bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath '.harness/<task>/binding-check.log'"
+```
+* `timeout=300000` 保证 120s 不截断；`Tee-Object` 保证 EXIT/ELAPSED/RAW 实时透传到控制台与文件，超时 `-2` 可被上游捕获并立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（V11），而非“停下汇报”。*
 
 ## Pitfalls（实施踩坑备忘）
 
 ### Pitfall 1 · 拆分递归爆炸
 - **现象**：某步 CLI 超时后自动拆分 prompt 重跑，子项仍超时再拆，无限递归耗尽资源。
-- **规则**：受 `MaxSplitDepth=3`、`MaxAttempts=3` 壁垒约束，最小粒度=单文件（prompt 行数 < 4 不再拆）；触壁垒即写 `status="blocked_split_limit"`、进程以 `EXIT_CODE=3` 退出，不再递归（详见 `shared/core-logic.md` §6.1）。
+- **规则**：受 `MaxSplitDepth=3`、`MaxAttempts=3` 壁垒约束，最小粒度=单文件（prompt 行数 < 4 不再拆，对应 `run_step.ps1:171`）；触壁垒即写 `status="blocked_split_limit"`、进程以 `EXIT_CODE=3` 退出，不再递归（详见 `shared/core-logic.md` §6.1）。**V11 立即拆分**：`EXIT_CODE=-2` 且 `prompt 行数≥4` 且 `attempt<MaxSplitDepth` → 立即二分重跑，深度达 3 才 `blocked_split_limit/EXIT_CODE=3`，不得停下汇报。
 - **触发**：某步 CLI 超时（`EXIT_CODE=-2`）且当前 prompt 仍可拆。
 
 ### Pitfall 2 · 借拆分换模型族绕过绑定
@@ -109,15 +115,14 @@ version: 13.0.23
 - **规则**：每个 runner 在 `Out-File $msgFile` 之后、`Write-Output` 之前追加写 `evidence.json`（7 字段 + `binding_snapshot`），**不替换**原有 `stepN-output.md` 与 `EXIT_CODE/ELAPSED/RAW/OUTPUT` 控制台行。
 - **触发**：任意 runner 正常或异常退出前。
 
-## 编排流程（主 agent 用 Task 工具）
+## 编排流程（主 agent 用 Task 工具 + V10/V11 立即拆分）
 
-1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置。
-   加载并校验 `binding-lock.json`：`locked` 必须 `true`、step3 与 step4 模型族必须不同（`constraints.step4_must_differ_from_step3_family`）；任一不满足 orchestrator fail-closed 拒绝启动（runner 不直接接受 Step 0 调用）。绑定变更通过编辑 `binding-lock.json` 并在 `authorization_log` 追加条目实现；不得直接修改本文档的「后端绑定」节绕过校验。
-2. **Step 1** `harness-auditor`：入参 = 问题 + 文件路径 → `step1-problems.md`（P 编号）。零问题则终止报告。
-3. **Step 2** `harness-planner`：入参 = 问题清单 → `step2-plan.md`（F-<P编号>）。
+1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置。**V10 强制**：`bash --timeout 300000 -c "pwsh -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"` 校验；`locked` 必须 `true`、step3 与 step4 模型族必须不同（`constraints.step4_must_differ_from_step3_family`）；任一不满足 orchestrator fail-closed 拒绝启动。绑定变更通过编辑 `binding-lock.json` 并在 `authorization_log` 追加条目实现。
+2. **Step 1** `harness-auditor`：`bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"` → `step1-problems.md`（P 编号）。只读步骤超时 `EXIT_CODE=-2` → 立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`），不得停下汇报。零问题则终止。
+3. **Step 2** `harness-planner`：同上 `bash --timeout 300000 … | Tee-Object` → `step2-plan.md`（F-<P编号>），超时同 V11 立即拆分。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
-5. **Step 3** 执行：把方案写入 `step3-prompt.txt` → 调 `opencode/scripts/run_mimo_step3.ps1`（stdin 管道喂 prompt，见"mimo CLI 调用规范（step3）"）→ 读 `step3/step3-output.md`。执行后对比基线验无方案外改动。
-6. **Step 4** **`harness-verifier` subagent（opencode-sub）**：入参 = 修改后代码绝对路径 + step1 问题清单 → 主 agent 用 Task 调 `harness-verifier` → 读取 `step4/step4-review.md`，评级 `通过`/`需调整`。若绑定为 mimo/codex CLI，则对应调 `run_mimo_step4.ps1` / `run_codex_step4.ps1`。
+5. **Step 3** 执行：把方案写入 `step3-prompt.txt` → `bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step3 ... | Tee-Object -FilePath .harness/<task>/step3/run.log"` → 读 `step3/step3-output.md`。执行后对比基线验无方案外改动。
+6. **Step 4** **`harness-verifier` subagent（opencode-sub）**：`bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step4 ... | Tee-Object -FilePath .harness/<task>/step4/run.log"` → `step4/step4-review.md`，评级 `通过`/`需调整`。超时同样立即拆分，不得 `auto_pass_timeout` 静默转通过（已移除）。
 7. **循环**：`需调整` → 回 Step 2（只处理未通过的 P + 新阻塞；入参加挂上轮复审）。Step 1 只做一次。上限默认 3 次（可配置到 10，见 shared/core-logic.md §6），超限汇报未解决问题。
 
 ## 硬性规则（主 agent）
@@ -134,6 +139,10 @@ version: 13.0.23
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.24 (2026-08-20)
+- **V10/V11 自修复（用四步法修四步法）**：`bash --timeout 300000 + Tee-Object` 实时透传 `EXIT_CODE/ELAPSED/RAW`（F-P06/F-P07/F-P08/F-P09/F-P10/F-P15），移除 `run_step.ps1:152 auto_pass_timeout` 静默转通过（F-P01），补齐 `prechunk` 壁垒（F-P04）、递归深度感知（F-P11）、`shared/core-logic.md §6.1` 最小粒度注释（F-P05）、`dsh/scripts/run_step.ps1` 拆分闭环（F-P02），文档改“立即拆分不停下”（F-P03/F-P13/F-P14）。
+- **binding 切换**：step1/2 因 claude 超时无法完成审计，临时切 `opencode-sub`（用户授权，见 `opencode/binding-lock.json authorization_log`），step3 仍 claude、step4 opencode-sub 保持 `step4≠step3` 约束。
 
 ### v13.0.23 (2026-08-19)
 - **违规7 修复（step4 改用 opencode-sub）**：step4 绑定由 mimo CLI 改为 `harness-verifier` subagent（opencode-sub），用户显式授权记录于 binding-lock.json authorization_log；run_step.ps1 增加 opencode-sub 分派（EXIT_CODE=99）。

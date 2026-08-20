@@ -160,7 +160,7 @@ Step 4 必须读取 Step 3 验证状态后决定是否补跑回归：
 - **opencode**：`opencode/SKILL.md` + `opencode/agents/harness-orchestrator.md`（路由规则）
 - **Hermes**：不实现（自带视觉，§11 不适用）### 6.1 超时拆分壁垒（BLOCKED_SPLIT_LIMIT）
 当某步 CLI 超时（`EXIT_CODE=-2`），适配层可把当前 prompt 拆成子项分别重跑，但必须受以下壁垒约束，防止无限拆分/递归爆炸：
-- **最小拆分粒度 = 单文件**：拆到以单文件为单位的子 prompt 后不得再拆；已是最小粒度仍超时即触壁垒。
+- **最小拆分粒度 = 单文件（实现判定：prompt 行数 < 4 时视为已达最小粒度，不得再拆，对应 `opencode/scripts/run_step.ps1:171`）**：拆到以单文件为单位的子 prompt 后不得再拆；已是最小粒度仍超时即触壁垒（`status=blocked_split_limit`/`EXIT_CODE=3`）。
 - **最大递归深度 = 3**（可配置 `MaxSplitDepth`）：子项再超时可继续拆，但深度达 3 即停。
 - **最大尝试次数 = 3**（可配置 `MaxAttempts`）：超 `MaxAttempts` 或 `MaxSplitDepth` 任一即触壁垒。
 - **降级出口**：触壁垒时写 `evidence.json` 字段 `status="blocked_split_limit"`、`exit_code=-2`，进程以 `EXIT_CODE=3` 返回，并向上游报告"该子问题无法在自动拆分内闭环，需人工介入或重切绑定"。

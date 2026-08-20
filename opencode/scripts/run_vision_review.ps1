@@ -1,4 +1,5 @@
-﻿param(
+﻿# V10 轻量：本视觉 runner 同用 Start-Job + Wait-Job -Timeout 180 且末尾输出 EXIT_CODE；caller 侧同样需 timeout=300000 + Tee-Object，否则 -2 丢失（虽不直接触发 §6.1 拆分，但证据链断裂）
+param(
     [Parameter(Mandatory = $true)]
     [string[]]$ImageFiles,
     [string]$Prompt = "",

@@ -1,4 +1,5 @@
-﻿param(
+﻿# V10 警示：本 runner 用 Start-Job + Wait-Job -Timeout 且 103-106 行才输出 EXIT_CODE/ELAPSED/RAW；bash 默认 120s 将先截断本 runner，调用方必须 bash --timeout 300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 -2 超时无法触发上游拆分
+param(
     [Parameter(Mandatory = $true)]
     [string]$PromptFile,
     [Parameter(Mandatory = $true)]

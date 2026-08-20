@@ -1,3 +1,4 @@
+# V10 强制：本 runner 用 Start-Job + Wait-Job 且末尾输出 EXIT_CODE/ELAPSED/RAW；bash 默认 120s 将截断，调用必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log
 param(
     [Parameter(Mandatory = $true)]
     [string]$PromptFile,

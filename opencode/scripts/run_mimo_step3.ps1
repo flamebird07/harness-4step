@@ -1,3 +1,4 @@
+# V10 强制：本 runner 默认 Timeout 180-900s、末尾集中输出 EXIT_CODE/ELAPSED/RAW，无 Tee-Object 实时透传；文件头原仅讲 stdin 管道死锁，现补充：bash 调用必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 >120s 的 mimo/codex 长 prompt 必被 120s 截断、EXIT/ELAPSED 丢失、误判 hang（违规10）
 param(
     [Parameter(Mandatory = $true)]
     [string]$PromptFile,

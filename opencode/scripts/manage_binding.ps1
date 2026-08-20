@@ -3,7 +3,11 @@
 opencode 适配层绑定管理：加载/校验/展示 binding-lock.json，仅允许经显式用户授权改写绑定
 （写入 authorization_log，tmp 原子替换）。对齐 Hermes 端 binding-lock.json + authorize_binding_change()。
 
-用法：
+V10 调用约定：bash 调本脚本及 run_step.ps1 必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log 实时透传，否则 EXIT_CODE/BINDING_LOCK_OK 因 120s 截断丢失
+用法（bash 侧）：
+  bash --timeout 300000 -c "pwsh -File manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"
+  bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"
+用法（pwsh 直接）：
   manage_binding.ps1 -ShowBindings                          # 展示每步绑定 + 合并配置后的超时 + 可执行文件状态
   manage_binding.ps1 -Check                                 # 校验（fail-closed）：lock 存在且有效、bindings 恰好 step1..step4、step4 与 step3 不同模型族
   manage_binding.ps1 -InstallFromRepo                       # 幂等：把仓库 opencode/binding-lock.json 同步到本机锁路径（保留本机 authorization_log）
@@ -11,7 +15,7 @@ opencode 适配层绑定管理：加载/校验/展示 binding-lock.json，仅允
   manage_binding.ps1 -AuthorizeStep step3 -Agent claude -Authorization "<用户授权原文，≥12字符>"
 
 路径：lock 默认 $HOME/.config/opencode/harness/binding-lock.json（本机私有；模板在仓库 opencode/binding-lock.json）；
-      config 默认同目录 harness-config.json。环境变量覆盖：OPCODE_BINDING_LOCK / OPCODE_HARNESS_CONFIG。
+       config 默认同目录 harness-config.json。环境变量覆盖：OPCODE_BINDING_LOCK / OPCODE_HARNESS_CONFIG。
 #>
 param(
     [string]$LockPath = $env:OPCODE_BINDING_LOCK,
