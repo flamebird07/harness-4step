@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutDir,
     [string]$Model = "xiaomi/mimo-v2.5-pro",
+    [string]$Step = "step4",
     [int]$TimeoutSeconds = 300,
     [string]$Permissions = "default"
 )
@@ -28,7 +29,7 @@ if (-not $prompt) { throw "Prompt file is empty" }
 # F-P05/F-P10: 删除原 prompt 字符清理段（stdin 路径下不经过 argv 拆词，清理纯损语义）
 # 注：argv 路径下的字符拆词风险由 F-P01（事件驱动 async drain）+ F-P02（套娃保留 + UTF-8）共同避免
 $rawFile = Join-Path $OutDir "mimo_raw.txt"
-$msgFile = Join-Path $OutDir "step4-review.md"
+$msgFile = Join-Path $OutDir $(if ($Step -eq "step4") { "step4-review.md" } else { "$Step-output.md" })
 
 $started = Get-Date
 # --- F-MIMO-HANG: 用 .NET 同步 Process + stdin pipe 替换 Start-Job 异步 ---
@@ -115,7 +116,7 @@ $status = switch ($exitCode) {
 $evidence = [ordered]@{
     schema_version   = 1
     task_id          = (Split-Path -Leaf $WorkspaceDir)
-    step             = "step4"
+    step             = $Step
     attempt          = 1
     agent            = "mimo"
     exit_code        = $exitCode
@@ -133,5 +134,5 @@ $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding ut
 Write-Output "EXIT_CODE=$exitCode"
 Write-Output "ELAPSED=${elapsed}s"
 Write-Output "RAW=$rawFile"
-Write-Output "REVIEW=$msgFile"
+Write-Output $(if ($Step -eq "step4") { "REVIEW=$msgFile" } else { "OUTPUT=$msgFile" })
 Write-Output "EVIDENCE=$evFile"

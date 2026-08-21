@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.25
+version: 13.0.26
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.25
+# 四步法 Harness（opencode 适配层）v13.0.26
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -14,21 +14,30 @@ version: 13.0.25
 
 | 维度 | Hermes 适配层 | opencode 适配层（本文件） |
 |------|--------------|---------------------------|
-| 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | Task 调度 `harness-*` subagent（step1-3）+ `harness-verifier` subagent（step4，opencode-sub）；mimo/codex CLI 为备用路径 |
+| 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | `scripts/run_step.ps1` 按 binding 路由 CLI；仅已验证的 step4/opencode-sub 以 99 移交 orchestrator |
 | 反绕过 | `plugin/four-step-enforcer` | subagent `permission: edit: deny`（系统级）+ **step4 快照强制（Save@step4前 → Assert@step4后，shared/core-logic.md §8b，CLI 由 run_step.ps1 自动、opencode-sub 由编排层 assert，未通过即 EXIT_CODE=4 + 自动回退）** |
 | 队列/超时/拆分 | Hermes 专属机制 | opencode 经 `opencode/scripts/run_step.ps1` 实现超时拆分：`MaxSplitDepth=3`/`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`，见 `shared/core-logic.md §6.1` |
 
 ## 后端绑定（当前锁定配置）
 
-**绑定来源**：opencode 侧的绑定以机器可校验锁文件 `binding-lock.json` 为准。当前绑定：
-- **step1 = `claude` agent**（主模型，`permission_mode: default`）
-- **step2 = `claude` agent**（主模型，`permission_mode: default`）
-- **step3 = `claude` agent**（主模型，`permission_mode: bypassPermissions`）——通过 bash 调 `opencode/scripts/run_claude_step12.ps1 -Step step3` 执行
-- **step4 = `harness-verifier` subagent（opencode-sub）**——`permission_mode: default`，主 agent 用 Task 调 subagent（`opencode/agents/harness-verifier.md`），run_step.ps1 输出 `EXIT_CODE=99` 让调度者接管
-- 备用：mimo CLI（`opencode/scripts/run_mimo_step4.ps1`）或 codex CLI（`opencode/scripts/run_codex_step4.ps1`），认证失效/需外部模型族时经用户显式授权临时切换
+> 以下为 `opencode/binding-lock.json` 当前完整快照（由 orchestrator 写入，每次绑定变更后自动同步）。
 
-**核心约束（不可违反）**：Step 4 复审必须与 Step 3 使用不同模型族（step4 为 `harness-verifier` subagent/opencode-sub 或外部 CLI，step1-3 为主模型，天然满足）。
-绑定以机器可校验锁文件 `binding-lock.json` 为准（字段子集与 Hermes 端 schema 兼容）。`locked=false` 或 step3/step4 模型族相同 → orchestrator fail-closed 拒绝启动。runner 不直接接收 Step 0。
+```json
+{
+  "bindings": {
+    "step1": { "agent": "claude", "model": null, "permission_mode": "default" },
+    "step2": { "agent": "claude", "model": null, "permission_mode": "default" },
+    "step3": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
+    "step4": { "agent": "opencode-sub", "model": null, "permission_mode": "default" }
+  },
+  "constraints": {
+    "step4_must_differ_from_step3_family": true
+  },
+  "authorization_log": [ ... ]
+}
+```
+
+> **注意**：该小节应为自动生成的只读快照，禁止手动编辑。若发现内容与 `binding-lock.json` 不一致，应触发 `violations.log` 记录。
 
 ## 角色与权限映射
 
@@ -115,7 +124,9 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 - **规则**：每个 runner 在 `Out-File $msgFile` 之后、`Write-Output` 之前追加写 `evidence.json`（7 字段 + `binding_snapshot`），**不替换**原有 `stepN-output.md` 与 `EXIT_CODE/ELAPSED/RAW/OUTPUT` 控制台行。
 - **触发**：任意 runner 正常或异常退出前。
 
-## 编排流程（主 agent 用 Task 工具 + V10/V11 立即拆分）
+## 编排流程（唯一入口：`scripts/run_step.ps1`）
+
+`step1` 至 `step4` 的唯一启动入口是 `scripts/run_step.ps1`。主 agent 不得直接调用 `Task`、任一 `harness-*` subagent 或任一独立 runner；必须先由该脚本完成 Step 0 的 lock/binding 校验，再按当前 `bindings.<step>` 路由。缺失、未锁定、非法或无法解析的 lock 一律 fail-closed，且不得启动 CLI 或 subagent。
 
 1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置。**V10 强制**：`bash --timeout 300000 -c "pwsh -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"` 校验；`locked` 必须 `true`、step3 与 step4 模型族必须不同（`constraints.step4_must_differ_from_step3_family`）；任一不满足 orchestrator fail-closed 拒绝启动。绑定变更通过编辑 `binding-lock.json` 并在 `authorization_log` 追加条目实现。
 2. **Step 1** `harness-auditor`：`bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"` → `step1-problems.md`（P 编号）。只读步骤超时 `EXIT_CODE=-2` → 立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`），不得停下汇报。零问题则终止。
@@ -131,6 +142,9 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 - 主 agent 不得自己分析根因、写方案、改代码
 - 传参只传原始问题/产物，禁止夹带倾向性结论
 - Step 3 完成后必须立即进入 Step 4，不得中途停下汇报当"完成"
+- 不得绕过 `run_step.ps1` 直接调用 `Task`、`harness-*` subagent 或 runner。`opencode-sub` 仅允许由 `bindings.step4.agent` 指定；任何其他 step 都必须在启动后端前 fail-closed，绝不返回 99。
+- 合法 `step4/opencode-sub` 的 `EXIT_CODE=99` 仅是 Step 0 校验后的 orchestrator 移交信号。orchestrator 只能据此调度绑定角色，返回后继续既定 evidence 写入和只读快照断言，不能重新解释或替换 binding。
+- 每次 CLI、超时、普通失败、拆分壁垒和合法 99 移交都必须留下同一 schema 的 `evidence.json`；99 的状态为 `handoff_pending`，不是 evidence 豁免。
 
 ## 违规处理
 
@@ -139,6 +153,9 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.26 (2026-08-21)
+- **F-P-01 ~ F-P-04**：强制四步唯一经 `run_step.ps1` 启动；`opencode-sub` 仅可作为已验证 step4 binding 的 99 移交；Step 0 对损坏 JSON 明确 fail-closed；修复实际 runner 调用，并统一 runner/orchestrator 的 evidence schema。
 
 ### v13.0.25 (2026-08-20)
 

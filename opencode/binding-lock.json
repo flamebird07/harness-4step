@@ -2,25 +2,25 @@
     "schema_version":  1,
     "locked":  true,
     "bindings":  {
-                     "step2":  {
-                                   "agent":  "claude",
+                     "step1":  {
+                                   "agent":  "codex",
                                    "model":  null,
-                                   "permission_mode":  "default"
+                                   "permission_mode":  "read_only"
+                               },
+                     "step2":  {
+                                   "agent":  "codex",
+                                   "model":  null,
+                                   "permission_mode":  "bypassPermissions"
+                               },
+                     "step3":  {
+                                   "agent":  "codex",
+                                   "model":  null,
+                                   "permission_mode":  "bypassPermissions"
                                },
                      "step4":  {
                                    "agent":  "opencode-sub",
                                    "model":  null,
                                    "permission_mode":  "default"
-                               },
-                     "step1":  {
-                                   "agent":  "opencode-sub",
-                                   "model":  null,
-                                   "permission_mode":  "default"
-                               },
-                     "step3":  {
-                                   "agent":  "claude",
-                                   "model":  null,
-                                   "permission_mode":  "bypassPermissions"
                                }
                  },
     "constraints":  {
@@ -85,7 +85,38 @@
                                   "at":  "2026-08-20T22:40:03+08:00",
                                   "step":  "step4",
                                   "agent":  "opencode-sub",
-                                  "authorization":  "用户显式授权：codex sandbox CreateProcessWithLogonW失败，step4切opencode-sub保证只读快照与evidence闭环"
+                                  "authorization":  "用户显式授权：codex沙箱与claude超时均阻塞，step4切opencode-sub保证只读快照与evidence闭环"
+                              },
+                              {
+                                  "at":  "2026-08-21T00:00:00+08:00",
+                                  "step":  "all",
+                                  "agent":  "codex/claude/opencode-sub",
+                                  "authorization":  "用户显式授权：hermes-four-step-audit 任务 step1=codex(只读), step2/3=claude, step4=opencode-sub；step3与step4模型族不同(Claude vs other)满足constraints"
+                              },
+                              {
+                                  "at":  "2026-08-21T00:05:00+08:00",
+                                  "step":  "all",
+                                  "agent":  "codex/kimi/opencode-sub",
+                                  "authorization":  "用户显式授权：hermes-self-fix-cli-violation 任务 step1=codex(只读), step2/3=kimi, step4=codex；claude cli不可用改用kimi"
+                              },
+                              {
+                                  "at":  "2026-08-21T10:36:52+08:00",
+                                  "step":  "all",
+                                  "agent":  "codex/opencode-sub",
+                                  "authorization":  "用户显式授权：hermes-self-fix-cli-violation 续跑 step1/2/3=codex(GPT-5.6 Luna Max档), step4=opencode-sub；step3与step4不同族满足constraints"
+                              },
+                              {
+                                  "at":  "2026-08-21T10:48:07+08:00",
+                                  "step":  "all",
+                                  "agent":  "codex/opencode-sub",
+                                  "authorization":  "用户显式授权：hermes-self-fix-cli-violation 续跑 step1/2/3=codex(GPT-5.6 Luna Max档), step4=opencode-sub；step3与step4不同族满足constraints"
+                              },
+                              {
+                                  "at":  "2026-08-21T10:55:00+08:00",
+                                  "step":  "all",
+                                  "agent":  "codex/opencode-sub",
+                                  "authorization":  "用户显式授权变更：codex 请求 GPT-5.6 Luna Max 但 ChatGPT 账号返回 model not supported，fallback 到 codex 默认模型（null）；step1/2/3=codex(default), step4=opencode-sub；已验证 codex 默认可执行"
                               }
                           ]
 }
+

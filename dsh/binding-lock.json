@@ -1,4 +1,5 @@
 {
+  "//": "bindings.models 定义每步的模型族。constraints 字段为强制校验层：step4_must_differ_from_step3_family=true 要求 step4 与 step3 必须使用不同模型族（由 models 字段的具体值来满足）。两者配合使用，models 为声明式约束，constraints 为校验式约束。",
   "schema_version": 1,
   "locked": true,
   "bindings": {
@@ -12,6 +13,9 @@
     "step2": { "family": "deepseek", "model": "" },
     "step3": { "family": "deepseek", "model": "" },
     "step4": { "family": "other", "model": "" }
+  },
+  "constraints": {
+    "step4_must_differ_from_step3_family": true
   },
   "authorization_log": [
     {

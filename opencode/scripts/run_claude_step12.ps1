@@ -96,7 +96,11 @@ $evidence = [ordered]@{
     agent            = "claude"
     exit_code        = $exitCode
     status           = if ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
-    binding_snapshot = @{ agent = "claude"; permission_mode = $Permissions }
+    output_files     = @{ raw = $rawFile; output = $msgFile; evidence = (Join-Path $OutDir "evidence.json") }
+    split_parent     = $null
+    timestamp        = $started.ToString("o")
+    warnings         = @()
+    binding_snapshot = @{ agent = "claude"; permission_mode = $Permissions; model = $null }
 }
 $evFile = Join-Path $OutDir "evidence.json"
 $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding utf8
@@ -105,3 +109,4 @@ Write-Output ("EXIT_CODE=" + $exitCode)
 Write-Output ("ELAPSED=" + $elapsed + "s")
 Write-Output ("RAW=" + $rawFile)
 Write-Output ("OUTPUT=" + $msgFile)
+Write-Output ("EVIDENCE=" + $evFile)

@@ -19,7 +19,11 @@ $ErrorActionPreference = "Continue"
 $SkillDir = Split-Path -Parent $PSScriptRoot
 $lockFile = Join-Path $SkillDir "binding-lock.json"
 if (-not (Test-Path -LiteralPath $lockFile)) { throw "binding-lock.json missing at $lockFile" }
-$lock = Get-Content -LiteralPath $lockFile -Encoding UTF8 -Raw | ConvertFrom-Json
+try {
+    $lock = Get-Content -LiteralPath $lockFile -Encoding UTF8 -Raw | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    throw "binding-lock.json invalid JSON — fail-closed: $($_.Exception.Message)"
+}
 if (-not $lock.locked) { throw "binding NOT locked — fail-closed" }
 $b = $lock.bindings.$Step; if (-not $b) { throw "no binding for $Step in binding-lock.json" }
 if ($Step -eq "step4" -and $lock.constraints.step4_must_differ_from_step3_family) {
@@ -46,18 +50,33 @@ $runner = switch ($b.agent) {
     "mimo"   { Join-Path $PSScriptRoot $(if ($Step -eq "step4") { "run_mimo_step4.ps1" } else { "run_mimo_step3.ps1" }) }
     "codex"  { Join-Path $PSScriptRoot "run_codex_step4.ps1" }
     "kimi"   { Join-Path $PSScriptRoot "run_kimi_step4.ps1" }
-    "opencode-sub" { "" }  # 无 runner 脚本：主 agent 用 Task 调 subagent（harness-auditor/planner/implementer/verifier）——快照 Assert 由主编排层在 Task 返回后执行
+    "opencode-sub" {
+        if ($Step -ne "step4") {
+            throw "opencode-sub is authorized only for bindings.step4 — fail-closed"
+        }
+        ""
+    }  # 无 runner 脚本：仅合法 step4 binding 由 orchestrator 接管
     default  { throw "unknown agent in binding-lock.json: $($b.agent)" }
 }
 
 function Invoke-Runner([string]$pf, [string]$od) {
     if ($b.agent -eq "opencode-sub") {
-        # 主 agent 用 Task 调 subagent：输出 BINDING=opencode-sub + exit 99 让调度者接管
+        # Step 0 已验证：只有 bindings.step4.agent=opencode-sub 才能移交 orchestrator。
         return [pscustomobject]@{ ExitCode = 99; Output = @("BINDING=opencode-sub", "EXIT_CODE=99") }
     }
     $extra = @{ PromptFile = $pf; WorkspaceDir = $WorkspaceDir; OutDir = $od; TimeoutSeconds = $TimeoutSeconds }
     if ($b.agent -eq "claude") { $extra["Step"] = $Step; $extra["Permissions"] = $b.permission_mode }
-    $lines = & $runner @extra 2>&1
+    if ($b.agent -eq "codex") { $extra["Step"] = $Step; $extra["Permissions"] = $b.permission_mode; if ($b.model) { $extra["Model"] = $b.model } }
+    if ($b.agent -eq "mimo" -or $b.agent -eq "kimi") {
+        $extra["Step"] = $Step
+        $extra["Permissions"] = $b.permission_mode
+        if ($b.model) { $extra["Model"] = $b.model }
+    }
+    try {
+        $lines = @(& $runner @extra 2>&1 | ForEach-Object { $_.ToString() })
+    } catch {
+        $lines = @("RUNNER_INVOCATION_ERROR=$($_.Exception.Message)")
+    }
     $m = ($lines | Select-String -Pattern '^EXIT_CODE=(-?\d+)\s*' | Select-Object -First 1)
     $ec = if ($m) { [int]($m.Matches[0].Groups[1].Value) } else { -1 }
     return [pscustomobject]@{ ExitCode = $ec; Output = $lines }
@@ -76,7 +95,17 @@ function Merge-Evidence([string]$od, [int]$ec, [string]$status, [int]$att, [stri
     $base = if (Test-Path -LiteralPath $runnerEvFile) {
         try { Get-Content -LiteralPath $runnerEvFile -Encoding UTF8 -Raw | ConvertFrom-Json } catch { [pscustomobject]@{} }
     } else { [pscustomobject]@{} }
-    # 合并：orchestrator 覆盖 schema/step/attempt/agent/exit/status/split_parent/output_files/timestamp；保留 base 的 binding_snapshot / warnings
+    # 合并：orchestrator 覆盖运行上下文；保留 runner 的 binding_snapshot / warnings。
+    # Keep the runner's raw/output paths and then add the orchestration-level
+    # fields.  A merged record must not discard evidence emitted by a CLI.
+    $outputFiles = [ordered]@{}
+    if ($base.PSObject.Properties.Name -contains 'output_files' -and $base.output_files) {
+        foreach ($property in $base.output_files.PSObject.Properties) {
+            $outputFiles[$property.Name] = $property.Value
+        }
+    }
+    $outputFiles['output'] = if ($realOutput) { $realOutput } else { "<not-yet-written>" }
+    $outputFiles['evidence'] = $runnerEvFile
     $merged = [ordered]@{
         schema_version   = 1
         task_id          = (Split-Path -Leaf $WorkspaceDir)
@@ -86,13 +115,16 @@ function Merge-Evidence([string]$od, [int]$ec, [string]$status, [int]$att, [stri
         exit_code        = $ec
         status           = $status
         split_parent     = $parent
-        output_files     = [ordered]@{
-            output    = if ($realOutput) { $realOutput } else { "<not-yet-written>" }
-            evidence  = $runnerEvFile
-        }
+        output_files     = $outputFiles
         timestamp        = (Get-Date).ToString("o")
     }
-    if ($base.PSObject.Properties.Name -contains 'binding_snapshot') { $merged['binding_snapshot'] = $base.binding_snapshot }
+    if ($base.PSObject.Properties.Name -contains 'binding_snapshot') {
+        $merged['binding_snapshot'] = $base.binding_snapshot
+    } else {
+        $snapshot = [ordered]@{ agent = $b.agent; permission_mode = $b.permission_mode }
+        if ($null -ne $b.model) { $snapshot['model'] = $b.model }
+        $merged['binding_snapshot'] = $snapshot
+    }
     if ($base.PSObject.Properties.Name -contains 'warnings' -and $base.warnings) { $merged['warnings'] = $base.warnings }
     $merged | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $runnerEvFile -Encoding utf8
 }
@@ -153,7 +185,9 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     New-Item -ItemType Directory -Path $curOut -Force | Out-Null
     $r = Invoke-Runner $curPrompt $curOut
     if ($r.ExitCode -eq 99) {
-        # opencode-sub 分派：主 agent 接管（Task 调 subagent），不在此写 evidence；快照已在脚本头部 Save，Assert 由主编排层在 subagent 返回后执行（harness-orchestrator.md 违规记录强制点 1）
+        # 合法 step4/opencode-sub 移交也必须有可审计 evidence；99 不是 evidence 豁免。
+        Merge-Evidence $curOut 99 "handoff_pending" $attempt $splitParent
+        # 主 agent 仅依据此已验证 binding 调度 verifier；subagent 返回后继续既定 evidence/Step4 snapshot 流程。
         Write-Output "STEP4_GUARD_SNAPSHOT=$OutDir/pre-step4.sha256 (Assert deferred to orchestrator for opencode-sub)"
         Write-Output "EXIT_CODE=99"
         exit 99

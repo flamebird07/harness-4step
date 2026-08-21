@@ -1,10 +1,10 @@
 ---
 name: harness-4step
 description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（vision-reviewer：mimo CLI + 视觉模型看图，shared/core-logic.md §11，DSH 与 opencode 支持、Hermes 自带视觉不触发）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.25
+version: 13.0.26
 ---
 
-# 四步法 Harness（DeepSeek Harness 适配层 v13.0.25 — DSH subagent 为主 + CLI 可选）
+# 四步法 Harness（DeepSeek Harness 适配层 v13.0.26 — DSH subagent 为主 + CLI 可选）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 DSH 落地：把共享逻辑映射到 DeepSeek Harness 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -31,6 +31,8 @@ version: 13.0.25
 - step4 备用：可经 `manage_binding.ps1 -AuthorizeStep step4 -Agent codex` 切换到 codex CLI（外部独立模型族），仅当用户显式授权时切换。
 
 **模型族（关键）**：`dsh-sub` 的模型族由 `binding-lock.json` 的 `models` 字段决定（step1/2/3 默认 `family: deepseek`，step4 必须配置为**其他族**如 `family: other` 或改用外部 CLI）。DSH `subagent` 工具创建 subagent 时支持 `provider`/`model` 覆盖——创建 step3 与 step4 的 subagent 时必须按此配置给不同模型，确保**Step 4 与 Step 3 不同模型族**（硬约束，`manage_binding.ps1 -Check` 强制校验）。若当前 DSH 环境只有单一模型族可用，必须如实向用户报告并停止，不得用"声明局限"代替不同族。
+
+**`models` 与 `constraints` 的关系**：`models` 字段声明每步的模型族；`constraints` 字段声明必须满足的跨步关系约束。两者共同生效——`models` 负责提供具体模型参数，`constraints` 负责校验跨步规则（如 step4≠step3 模型族）。`manage_binding.ps1 -Check` 读取 `constraints` 字段执行 fail-closed 校验。
 
 **超时/描述配置（可选，用户本机私有）**：`~/.dsh/harness/harness-config.json`（模板复用 `opencode/harness-config.example.json` 的结构，env `DSH_HARNESS_CONFIG` 覆盖）可覆盖每步 `timeout_seconds` 与 `description`；**不得含 agent 字段**（绑定只由 binding-lock.json 决定，对齐 Hermes v13.0.10 防双配置源漂移）。
 
@@ -146,6 +148,10 @@ bash --timeout 300000 -c "pwsh -File opencode/scripts/run_kimi_step4.ps1 -Prompt
 5. 视觉审查（shared/core-logic.md §11）依赖共享 runner `opencode/scripts/run_vision_review.ps1`：从仓库根目录运行时用相对路径 `opencode/scripts/run_vision_review.ps1`（与 CLI runner 共享模式一致）；单独复制脚本时一并复制该文件即可（mimo CLI 需已装并登录，见 `references/mimo-cli-login.md`）
 
 ## 版本历史
+
+### v13.0.26 (2026-08-21)
+
+- **F-P-01 ~ F-P-04（四步唯一入口 + evidence 统一，三平台同步）**：强制四步唯一经 `run_step.ps1` 启动；`dsh-sub`/`opencode-sub` 仅可作为已验证 step4 binding 的 99 移交；Step 0 对损坏 `binding-lock.json` 明确 fail-closed；修复实际 runner 调用，并统一 5 runner + orchestrator 的 `evidence.json` 为 7 字段 + `binding_snapshot`。版本号 13.0.25 → 13.0.26。
 
 ### v13.0.25 (2026-08-20)
 

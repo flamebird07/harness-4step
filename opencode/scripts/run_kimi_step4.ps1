@@ -6,7 +6,10 @@ param(
     [string]$WorkspaceDir,
     [Parameter(Mandatory = $true)]
     [string]$OutDir,
-    [int]$TimeoutSeconds = 300
+    [string]$Step = "step4",
+    [string]$Model,
+    [int]$TimeoutSeconds = 300,
+    [string]$Permissions = "default"
 )
 
 $ErrorActionPreference = "Continue"
@@ -24,7 +27,7 @@ $prompt = $prompt.Trim()
 if (-not $prompt) { throw "Prompt file is empty" }
 
 $rawFile = Join-Path $OutDir "kimi_raw.txt"
-$msgFile = Join-Path $OutDir "step4-review.md"
+$msgFile = Join-Path $OutDir $(if ($Step -eq "step4") { "step4-review.md" } else { "$Step-output.md" })
 
 # Step 4 is the reviewer: read-only, must never modify files.
 # kimi has no read-only sandbox flag, so read-only is enforced behaviourally:
@@ -82,12 +85,16 @@ $out | Out-File -LiteralPath $msgFile -Encoding utf8
 $evidence = [ordered]@{
     schema_version   = 1
     task_id          = (Split-Path -Leaf $WorkspaceDir)
-    step             = "step4"
+    step             = $Step
     attempt          = 1
     agent            = "kimi"
     exit_code        = $exitCode
     status           = if ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
-    binding_snapshot = @{ agent = "kimi"; permission_mode = "read-only-behavioural" }
+    output_files     = @{ raw = $rawFile; output = $msgFile; evidence = (Join-Path $OutDir "evidence.json") }
+    split_parent     = $null
+    timestamp        = $started.ToString("o")
+    warnings         = @()
+    binding_snapshot = @{ agent = "kimi"; model = $Model; permission_mode = $Permissions }
 }
 $evFile = Join-Path $OutDir "evidence.json"
 $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding utf8
@@ -95,4 +102,5 @@ $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding ut
 Write-Output ("EXIT_CODE=" + $exitCode)
 Write-Output ("ELAPSED=" + $elapsed + "s")
 Write-Output ("RAW=" + $rawFile)
-Write-Output ("REVIEW=" + $msgFile)
+Write-Output ($(if ($Step -eq "step4") { "REVIEW=" } else { "OUTPUT=" }) + $msgFile)
+Write-Output ("EVIDENCE=" + $evFile)

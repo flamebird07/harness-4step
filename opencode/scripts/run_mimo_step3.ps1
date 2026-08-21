@@ -1,5 +1,6 @@
 # V10 强制：本 runner 默认 Timeout 180-900s、末尾集中输出 EXIT_CODE/ELAPSED/RAW，无 Tee-Object 实时透传；文件头原仅讲 stdin 管道死锁，现补充：bash 调用必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 >120s 的 mimo/codex 长 prompt 必被 120s 截断、EXIT/ELAPSED 丢失、误判 hang（违规10）
 param(
+param(
     [Parameter(Mandatory = $true)]
     [string]$PromptFile,
     [Parameter(Mandatory = $true)]
@@ -7,7 +8,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutDir,
     [string]$Model = "xiaomi/mimo-v2.5-pro",
-    [int]$TimeoutSeconds = 900
+    [string]$Step = "step3",
+    [int]$TimeoutSeconds = 900,
+    [string]$Permissions = "dangerously-skip-permissions"
 )
 
 $ErrorActionPreference = "Continue"
@@ -25,7 +28,7 @@ $prompt = $prompt.Trim()
 if (-not $prompt) { throw "Prompt file is empty" }
 
 $rawFile = Join-Path $OutDir "mimo_step3_raw.txt"
-$msgFile = Join-Path $OutDir "step3-output.md"
+$msgFile = Join-Path $OutDir $(if ($Step -eq "step4") { "step4-review.md" } else { "$Step-output.md" })
 
 # F-P05/F-P10: 删除原 prompt 字符清理段（stdin 路径下不经过 argv 拆词，清理纯损语义）
 # 注：argv 路径下的字符拆词风险由 F-P01（事件驱动 async drain）+ F-P02（套娃保留 + UTF-8）共同避免
@@ -111,12 +114,16 @@ $out | Out-File -LiteralPath $msgFile -Encoding utf8
 $evidence = [ordered]@{
     schema_version   = 1
     task_id          = (Split-Path -Leaf $WorkspaceDir)
-    step             = "step3"
+    step             = $Step
     attempt          = 1
     agent            = "mimo"
     exit_code        = $exitCode
     status           = if ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
-    binding_snapshot = @{ agent = "mimo"; permission_mode = "dangerously-skip-permissions" }
+    output_files     = @{ raw = $rawFile; output = $msgFile; evidence = (Join-Path $OutDir "evidence.json") }
+    split_parent     = $null
+    timestamp        = $started.ToString("o")
+    warnings         = @()
+    binding_snapshot = @{ agent = "mimo"; model = $Model; permission_mode = $Permissions }
 }
 $evFile = Join-Path $OutDir "evidence.json"
 $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding utf8
@@ -124,4 +131,5 @@ $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding ut
 Write-Output ("EXIT_CODE=" + $exitCode)
 Write-Output ("ELAPSED=" + $elapsed + "s")
 Write-Output ("RAW=" + $rawFile)
-Write-Output ("OUTPUT=" + $msgFile)
+Write-Output ($(if ($Step -eq "step4") { "REVIEW=" } else { "OUTPUT=" }) + $msgFile)
+Write-Output ("EVIDENCE=" + $evFile)

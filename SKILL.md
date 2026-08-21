@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.25
+version: 13.0.26
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.25 — Step4 越权自修复 §8b + 快照强制)
+# Harness 4-Step Method (v13.0.26 — 四步唯一入口 + opencode-sub 仅 step4 + Step0 JSON fail-closed + evidence 统一)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.26 (2026-08-21)
+
+- **F-P-01 ~ F-P-04（四步唯一入口 + evidence 统一，三平台同步）**：强制四步唯一经 `run_step.ps1`（Hermes 侧为 `run_cli.py`）启动；`opencode-sub`/`dsh-sub` 仅可作为已验证 step4 binding 的 99 移交；Step 0 对损坏 `binding-lock.json` 明确 fail-closed；修复实际 runner 调用（`run_step.ps1:Invoke-Runner` 真实执行 `$runner` 并解析 `EXIT_CODE`），并统一 5 runner + orchestrator 的 `evidence.json` 为 7 字段 + `binding_snapshot`（含 model/sandbox）+ `output_files/split_parent/timestamp/warnings`。Hermes/opencode/DSH 三平台版本对齐至 13.0.26。
 
 ### v13.0.25 (2026-08-20)
 

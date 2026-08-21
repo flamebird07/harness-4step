@@ -6,7 +6,11 @@ param(
     [string]$WorkspaceDir,
     [Parameter(Mandatory = $true)]
     [string]$OutDir,
-    [int]$TimeoutSeconds = 300
+    [int]$TimeoutSeconds = 300,
+    [string]$Step = "step4",
+    [string]$Model,
+    [ValidateSet("default","read_only","bypassPermissions","read-only","workspace-write","danger-full-access")]
+    [string]$Permissions = "read_only"
 )
 
 $ErrorActionPreference = "Continue"
@@ -29,20 +33,44 @@ if (-not $env:CODEX_HOME) { $env:CODEX_HOME = Join-Path $env:USERPROFILE ".ccsc\
 $prompt = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
 
 $rawFile = Join-Path $OutDir "codex_raw.jsonl"
-$msgFile = Join-Path $OutDir "step4-review.md"
+if ($Step -eq "step4") {
+    $msgFile = Join-Path $OutDir "step4-review.md"
+} else {
+    $msgFile = Join-Path $OutDir "$Step-output.md"
+}
 
-# Step 4 is the reviewer: read-only, never writes files.
-# --sandbox read-only blocks apply_patch / Edit / Write, so the reviewer
-# cannot accidentally rewrite the target files (historical lesson:
-# danger-full-access twice rewrote code during review).
+# 映射 Permissions -> sandbox；step4 强制 read-only
+$sandbox = "read-only"
+if ($Step -eq "step4") {
+    $sandbox = "read-only"
+} else {
+    switch ($Permissions) {
+        "read_only" { $sandbox = "read-only" }
+        "read-only" { $sandbox = "read-only" }
+        "default" { $sandbox = "workspace-write" }
+        "bypassPermissions" { $sandbox = "danger-full-access" }
+        "workspace-write" { $sandbox = "workspace-write" }
+        "danger-full-access" { $sandbox = "danger-full-access" }
+        default { $sandbox = "workspace-write" }
+    }
+}
+
 $args = @(
     "exec",
     "--skip-git-repo-check",
     "--ephemeral",
-    "--sandbox", "read-only",
+    "--sandbox", $sandbox,
     "--json",
-    '-c', 'sandbox_permissions=["disk-full-read-access"]'
+    "-C", $WorkspaceDir
 )
+if ($sandbox -eq "read-only") {
+    $args += '-c'
+    $args += 'sandbox_permissions=["disk-full-read-access"]'
+}
+if ($Model) {
+    $args += "-m"
+    $args += $Model
+}
 
 # Windows read-only sandbox needs codex-windows-sandbox-setup.exe resolvable
 # from PATH (codex launches it via CreateProcess). The helper ships under the
@@ -94,9 +122,9 @@ foreach ($line in $output | ForEach-Object { $_.ToString() }) {
 $finalMsg = if ($messages.Count -gt 0) { $messages[-1] } else { "" }
 
 if ($finalMsg) {
-    $out = "> codex CLI ($exitCode), {0:N1}s`n`n{1}" -f $elapsed, $finalMsg
+    $out = "> codex CLI ($exitCode), {0:N1}s, model={1}, sandbox={2}`n`n{3}" -f $elapsed, $(if($Model){"$Model"}else{"default"}), $sandbox, $finalMsg
 } else {
-    $out = "> codex CLI ($exitCode), {0:N1}s, NO agent_message in output`n`n{1}" -f $elapsed, ($output -join "`n")
+    $out = "> codex CLI ($exitCode), {0:N1}s, model={1}, sandbox={2}, NO agent_message in output`n`n{3}" -f $elapsed, $(if($Model){"$Model"}else{"default"}), $sandbox, ($output -join "`n")
 }
 $out | Out-File -LiteralPath $msgFile -Encoding utf8
 
@@ -104,12 +132,16 @@ $out | Out-File -LiteralPath $msgFile -Encoding utf8
 $evidence = [ordered]@{
     schema_version   = 1
     task_id          = (Split-Path -Leaf $WorkspaceDir)
-    step             = "step4"
+    step             = $Step
     attempt          = 1
     agent            = "codex"
     exit_code        = $exitCode
     status           = if ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
-    binding_snapshot = @{ agent = "codex"; permission_mode = "read-only-sandbox" }
+    output_files     = @{ raw = $rawFile; output = $msgFile; evidence = (Join-Path $OutDir "evidence.json") }
+    split_parent     = $null
+    timestamp        = $started.ToString("o")
+    warnings         = @($(if (-not $finalMsg) { "no agent_message" } else { $null }) | Where-Object { $_ })
+    binding_snapshot = @{ agent = "codex"; model = $Model; permission_mode = $Permissions; sandbox = $sandbox }
 }
 $evFile = Join-Path $OutDir "evidence.json"
 $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding utf8
@@ -117,4 +149,9 @@ $evidence | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFile -Encoding ut
 Write-Output "EXIT_CODE=$exitCode"
 Write-Output "ELAPSED=${elapsed}s"
 Write-Output "RAW=$rawFile"
-Write-Output "REVIEW=$msgFile"
+if ($Step -eq "step4") {
+    Write-Output "REVIEW=$msgFile"
+} else {
+    Write-Output "OUTPUT=$msgFile"
+}
+Write-Output "EVIDENCE=$evFile"
