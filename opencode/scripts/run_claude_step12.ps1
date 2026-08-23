@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutDir,
     [string]$Step = "step1",
-    [int]$TimeoutSeconds = 300,
+    [int]$TimeoutSeconds = 180,
     [ValidateSet("default", "acceptEdits", "bypassPermissions")]
     [string]$Permissions = "default"
 )

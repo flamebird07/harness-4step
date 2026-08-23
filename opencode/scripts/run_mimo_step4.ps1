@@ -1,4 +1,4 @@
-# V10 强制：本 runner 默认 Timeout 300s、末尾集中输出 EXIT_CODE/ELAPSED/RAW，无 Tee-Object 实时透传；bash 调用必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 >120s 必被截断
+﻿# V10 强制：本 runner 默认 Timeout 180s、末尾集中输出 EXIT_CODE/ELAPSED/RAW，无 Tee-Object 实时透传；bash 调用必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 >120s 必被截断
 param(
     [Parameter(Mandatory = $true)]
     [string]$PromptFile,
@@ -8,7 +8,7 @@ param(
     [string]$OutDir,
     [string]$Model = "xiaomi/mimo-v2.5-pro",
     [string]$Step = "step4",
-    [int]$TimeoutSeconds = 300,
+    [int]$TimeoutSeconds = 180,
     [string]$Permissions = "default"
 )
 

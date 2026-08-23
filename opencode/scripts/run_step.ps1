@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory=$true)][string]$PromptFile,
     [Parameter(Mandatory=$true)][string]$WorkspaceDir,
     [Parameter(Mandatory=$true)][string]$OutDir,
-    [int]$TimeoutSeconds = 900,
+    [int]$TimeoutSeconds = 180,
     [int]$MaxAttempts = 3,
     [int]$MaxSplitDepth = 3
 )
@@ -129,6 +129,111 @@ function Merge-Evidence([string]$od, [int]$ec, [string]$status, [int]$att, [stri
     $merged | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $runnerEvFile -Encoding utf8
 }
 
+# P2(b) 修复：把"执行单分片 + 超时递归拆分"封装为函数；调度层串行调用每个预分片。
+function Invoke-TaskWithSplit {
+    param(
+        [string]$TaskPrompt, [string]$TaskOut,
+        [int]$AttemptBase, [string]$InitialSplitParent
+    )
+    $curPrompt = $TaskPrompt; $curOut = $TaskOut; $splitParent = $InitialSplitParent
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        New-Item -ItemType Directory -Path $curOut -Force | Out-Null
+        $r = Invoke-Runner $curPrompt $curOut
+        $att = $AttemptBase + $attempt - 1
+        if ($r.ExitCode -eq 99) {
+            Merge-Evidence $curOut 99 "handoff_pending" $att $splitParent
+            return [pscustomobject]@{ ExitCode=99; Status="handoff_pending"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+        }
+        if ($Step -eq "step4" -and $step4GuardLoaded -and $b.agent -ne "opencode-sub") {
+            try {
+                $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $b.agent
+                if ($changed -and $changed.Count -gt 0) {
+                    Write-Output "VIOLATION: step4 wrote files: $($changed -join ', ') — auto-reverted per core-logic §8/§8b (correctness does not exempt)"
+                    Merge-Evidence $curOut 4 "violation_step4_write" $att $splitParent
+                    return [pscustomobject]@{ ExitCode=4; Status="violation_step4_write"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+                }
+            } catch { Write-Output "WARNING: Assert-Step4ReadOnly failed: $_" }
+        }
+        if ($r.ExitCode -eq 0) {
+            $status = "success"
+            if ($Step -eq "step4" -and $b.agent -eq "mimo") {
+                $dup = $r.Output | Where-Object { $_ -match '\S' } | Group-Object { $_.Trim() } |
+                       Where-Object { $_.Count -ge 5 -and $_.Name.Length -ge 20 } | Select-Object -First 1
+                if ($dup) {
+                    $status = "success_with_repeat_warning"
+                    Write-Output "WARNING: mimo step4 output repeats a line x$($dup.Count): '$($dup.Name.Substring(0,[Math]::Min(40,$dup.Name.Length)))'... possible degenerate generation. Suggestion: rerun step4 with kimi (binding change requires user authorization; NOT auto-switched per section 4b)."
+                }
+            }
+            Merge-Evidence $curOut 0 $status $att $splitParent
+            return [pscustomobject]@{ ExitCode=0; Status=$status; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+        }
+        if ($r.ExitCode -ne -2) {
+            Merge-Evidence $curOut $r.ExitCode "error" $att $splitParent
+            return [pscustomobject]@{ ExitCode=$r.ExitCode; Status="error"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+        }
+        # EXIT_CODE=-2：超时 → 按 §6.1 拆分
+        if ($attempt -ge $MaxSplitDepth) {
+            Merge-Evidence $curOut 3 "blocked_split_limit" $att $splitParent
+            return [pscustomobject]@{ ExitCode=3; Status="blocked_split_limit"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent; Detail="depth=$attempt" }
+        }
+        $txt = Get-Content -LiteralPath $curPrompt -Encoding UTF8 -Raw
+        $ln = $txt -split "`r?`n"
+        if ($ln.Count -lt 4) {
+            Merge-Evidence $curOut 3 "blocked_split_limit" $att $splitParent
+            return [pscustomobject]@{ ExitCode=3; Status="blocked_split_limit"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent; Detail="min_granularity" }
+        }
+        $mid = [int]($ln.Count / 2)
+        $aTxt = ($ln[0..($mid-1)] -join "`n"); $bTxt = ($ln[$mid..($ln.Count-1)] -join "`n")
+        # subitems 落在 $TaskOut 下（每个预分片隔离，避免多分片递归时 path 撞车）
+        $sub = Join-Path $TaskOut "subitems\$attempt"
+        New-Item -ItemType Directory -Path "$sub\a","$sub\b","$sub\rejected" -Force | Out-Null
+        $aTxt | Out-File -LiteralPath "$sub\a\prompt.txt" -Encoding utf8
+        $bTxt | Out-File -LiteralPath "$sub\b\prompt.txt" -Encoding utf8
+        try { Get-ChildItem -LiteralPath $curOut -File -ErrorAction SilentlyContinue | Move-Item -Destination "$sub\rejected\" -Force } catch {}
+        $ra = Invoke-Runner "$sub\a\prompt.txt" "$sub\a"
+        if ($Step -eq "step4" -and $step4GuardLoaded -and $b.agent -ne "opencode-sub") {
+            try {
+                $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $b.agent
+                if ($changed -and $changed.Count -gt 0) {
+                    Write-Output "VIOLATION: step4 wrote files: $($changed -join ', ') — auto-reverted per core-logic §8/§8b (correctness does not exempt)"
+                    Merge-Evidence "$sub\a" 4 "violation_step4_write" $att $splitParent
+                    return [pscustomobject]@{ ExitCode=4; Status="violation_step4_write"; OutDir="$sub\a"; Attempt=$att; SplitParent=$splitParent }
+                }
+            } catch { Write-Output "WARNING: Assert-Step4ReadOnly failed: $_" }
+        }
+        if ($ra.ExitCode -eq -2) {
+            if (($attempt+1) -ge $MaxSplitDepth) {
+                Merge-Evidence "$sub\a" 3 "blocked_split_limit" ($att+1) $curPrompt
+                return [pscustomobject]@{ ExitCode=3; Status="blocked_split_limit"; OutDir="$sub\a"; Attempt=($att+1); SplitParent=$curPrompt; Detail="sub_a_timeout" }
+            }
+            $curPrompt = "$sub\a\prompt.txt"; $curOut = "$sub\a"; $splitParent = $curPrompt; continue
+        }
+        $rb = Invoke-Runner "$sub\b\prompt.txt" "$sub\b"
+        if ($Step -eq "step4" -and $step4GuardLoaded -and $b.agent -ne "opencode-sub") {
+            try {
+                $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $b.agent
+                if ($changed -and $changed.Count -gt 0) {
+                    Write-Output "VIOLATION: step4 wrote files: $($changed -join ', ') — auto-reverted per core-logic §8/§8b (correctness does not exempt)"
+                    Merge-Evidence "$sub\b" 4 "violation_step4_write" $att $splitParent
+                    return [pscustomobject]@{ ExitCode=4; Status="violation_step4_write"; OutDir="$sub\b"; Attempt=$att; SplitParent=$splitParent }
+                }
+            } catch { Write-Output "WARNING: Assert-Step4ReadOnly failed: $_" }
+        }
+        if ($rb.ExitCode -eq -2) {
+            if (($attempt+1) -ge $MaxSplitDepth) {
+                Merge-Evidence "$sub\b" 3 "blocked_split_limit" ($att+1) $curPrompt
+                return [pscustomobject]@{ ExitCode=3; Status="blocked_split_limit"; OutDir="$sub\b"; Attempt=($att+1); SplitParent=$curPrompt; Detail="sub_b_timeout" }
+            }
+            $curPrompt = "$sub\b\prompt.txt"; $curOut = "$sub\b"; $splitParent = $curPrompt; continue
+        }
+        $worse = if ($ra.ExitCode -ne 0) { $ra.ExitCode } else { $rb.ExitCode }
+        $status = if ($worse -eq 0) { "split_success" } else { "split_partial" }
+        Merge-Evidence $TaskOut $worse $status $att $curPrompt
+        return [pscustomobject]@{ ExitCode=$worse; Status=$status; OutDir=$curOut; Attempt=$att; SplitParent=$curPrompt }
+    }
+    return [pscustomobject]@{ ExitCode=-1; Status="no_return"; OutDir=$curOut; Attempt=$AttemptBase; SplitParent=$splitParent }
+}
+
 # 主循环：尝试 → 成功/非超时退出 → 超时则按 §4b 拆一次
 $curPrompt = $PromptFile
 $curOut = $OutDir
@@ -160,12 +265,12 @@ if ($lines0.Count -gt $prechunkTrigger) {
     if ($cur.Count -gt 0) { [void]$chunks.Add(($cur -join "`n")) }
     # V11 壁垒：prechunk 受 MaxSplitDepth 与最小粒度约束，不得绕过 §6.1
     if ($chunks.Count -gt $MaxSplitDepth) {
-        Merge-Evidence $OutDir -2 "blocked_split_limit" 1 $PromptFile
+        Merge-Evidence $OutDir 3 "blocked_split_limit" 1 $PromptFile
         Write-Output "EXIT_CODE=3 status=blocked_split_limit prechunk_exceeds_depth=$($chunks.Count) MaxSplitDepth=$MaxSplitDepth"
         exit 3
     }
     if ($chunks.Count -eq 1 -and $lines0.Count -lt 4) {
-        Merge-Evidence $OutDir -2 "blocked_split_limit" 1 $PromptFile
+        Merge-Evidence $OutDir 3 "blocked_split_limit" 1 $PromptFile
         Write-Output "EXIT_CODE=3 status=blocked_split_limit min_granularity prechunk"
         exit 3
     }
@@ -175,97 +280,29 @@ if ($lines0.Count -gt $prechunkTrigger) {
         $cp = Join-Path $preDir ("{0:D2}_prompt.txt" -f $i)
         $chunk | Out-File -LiteralPath $cp -Encoding utf8
     }
-    $curPrompt = Join-Path $preDir "01_prompt.txt"
-    $curOut = Join-Path $preDir "01"
-    New-Item -ItemType Directory -Path $curOut -Force | Out-Null
-    $splitParent = $PromptFile
-}
-# 调用方已用 Tee-Object 实时透传（V10），本循环末尾 Write-Output EXIT_CODE/ELAPSED/RAW 才会增量落盘
-for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-    New-Item -ItemType Directory -Path $curOut -Force | Out-Null
-    $r = Invoke-Runner $curPrompt $curOut
-    if ($r.ExitCode -eq 99) {
-        # 合法 step4/opencode-sub 移交也必须有可审计 evidence；99 不是 evidence 豁免。
-        Merge-Evidence $curOut 99 "handoff_pending" $attempt $splitParent
-        # 主 agent 仅依据此已验证 binding 调度 verifier；subagent 返回后继续既定 evidence/Step4 snapshot 流程。
-        Write-Output "STEP4_GUARD_SNAPSHOT=$OutDir/pre-step4.sha256 (Assert deferred to orchestrator for opencode-sub)"
-        Write-Output "EXIT_CODE=99"
-        exit 99
-    }
-    # Step4 CLI 路径：每次 runner 返回后立即 Assert 快照（§8b 正确性不豁免：即使测试通过也回退）
-    if ($Step -eq "step4" -and $step4GuardLoaded -and $b.agent -ne "opencode-sub") {
-        try {
-            $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $b.agent
-            if ($changed -and $changed.Count -gt 0) {
-                Write-Output "VIOLATION: step4 wrote files: $($changed -join ', ') — auto-reverted per core-logic §8/§8b (correctness does not exempt)"
-                Merge-Evidence $curOut 4 "violation_step4_write" $attempt $splitParent
-                Write-Output "EXIT_CODE=4 status=violation_step4_write"
-                exit 4
-            }
-        } catch { Write-Output "WARNING: Assert-Step4ReadOnly failed: $_" }
-    }
-    if ($r.ExitCode -eq 0) {
-        $status = "success"
-        if ($Step -eq "step4" -and $b.agent -eq "mimo") {
-            $dup = $r.Output | Where-Object { $_ -match '\S' } | Group-Object { $_.Trim() } |
-                   Where-Object { $_.Count -ge 5 -and $_.Name.Length -ge 20 } | Select-Object -First 1
-            if ($dup) {
-                $status = "success_with_repeat_warning"
-                Write-Output "WARNING: mimo step4 output repeats a line x$($dup.Count): '$($dup.Name.Substring(0,[Math]::Min(40,$dup.Name.Length)))'... possible degenerate generation. Suggestion: rerun step4 with kimi (binding change requires user authorization; NOT auto-switched per section 4b)."
-            }
+    # 串行调度每个预分片（修复：02+ 不再静默丢弃）
+    $results = @()
+    for ($ci = 1; $ci -le $chunks.Count; $ci++) {
+        $cp  = Join-Path $preDir ("{0:D2}_prompt.txt" -f $ci)
+        $cod = Join-Path $preDir ("{0:D2}" -f $ci)
+        $res = Invoke-TaskWithSplit -TaskPrompt $cp -TaskOut $cod -AttemptBase $ci -InitialSplitParent $PromptFile
+        Write-Output "PRECHUNK $ci/$($chunks.Count): exit=$($res.ExitCode) status=$($res.Status)"
+        $results += $res
+        # opencode-sub 合法 handoff：移交 orchestrator，终止后续分片调度
+        if ($res.ExitCode -eq 99) {
+            Write-Output "STEP4_GUARD_SNAPSHOT=$OutDir/pre-step4.sha256 (Assert deferred to orchestrator for opencode-sub)"
+            Merge-Evidence $OutDir 99 "handoff_pending" 1 $PromptFile
+            Write-Output "EXIT_CODE=99"; exit 99
         }
-        Merge-Evidence $curOut 0 $status $attempt $splitParent
-        Write-Output "EXIT_CODE=0"; exit 0
     }
-    if ($r.ExitCode -ne -2) {
-        Merge-Evidence $curOut $r.ExitCode "error" $attempt $splitParent
-        Write-Output "EXIT_CODE=$($r.ExitCode)"; exit $r.ExitCode
-    }
-    # V11 修复：移除 step4 auto_pass_timeout 静默转 success；EXIT_CODE=-2 必须立即走 §6.1 拆分（见下方 MaxSplitDepth/最小粒度壁垒），不得 exit 0
-    # 否则拆一次 prompt，分别跑两半；若任一半仍超时则 BLOCKED_SPLIT_LIMIT
-    if ($attempt -ge $MaxSplitDepth) {
-        Merge-Evidence $curOut -2 "blocked_split_limit" $attempt $splitParent
-        Write-Output "EXIT_CODE=3 status=blocked_split_limit depth=$attempt"; exit 3
-    }
-    $txt = Get-Content -LiteralPath $curPrompt -Encoding UTF8 -Raw
-    $ln = $txt -split "`r?`n"
-    if ($ln.Count -lt 4) {
-        # 已是最小粒度（< 4 行 ≈ 单文件，见 shared/core-logic.md §6.1）不能再拆
-        Merge-Evidence $curOut -2 "blocked_split_limit" $attempt $splitParent
-        Write-Output "EXIT_CODE=3 status=blocked_split_limit min_granularity"; exit 3
-    }
-    $mid = [int]($ln.Count / 2)
-    $aTxt = ($ln[0..($mid-1)] -join "`n")
-    $bTxt = ($ln[$mid..($ln.Count-1)] -join "`n")
-    $sub = Join-Path $OutDir "subitems\$attempt"
-    New-Item -ItemType Directory -Path "$sub\a","$sub\b","$sub\rejected" -Force | Out-Null
-    $aTxt | Out-File -LiteralPath "$sub\a\prompt.txt" -Encoding utf8
-    $bTxt | Out-File -LiteralPath "$sub\b\prompt.txt" -Encoding utf8
-    # rejected Move-Item 使用 -Force：当前每 attempt 后立即 exit，调度器无重试路径；
-    # 若未来调度引入重试，应改为带 attempt 编号子目录以避免覆盖。
-    try { Get-ChildItem -LiteralPath $curOut -File -ErrorAction SilentlyContinue | Move-Item -Destination "$sub\rejected\" -Force } catch {}
-    $ra = Invoke-Runner "$sub\a\prompt.txt" "$sub\a"
-    if ($ra.ExitCode -eq -2) {
-        if (($attempt+1) -ge $MaxSplitDepth) {
-            Merge-Evidence "$sub\a" -2 "blocked_split_limit" ($attempt+1) $curPrompt
-            Write-Output "EXIT_CODE=3 status=blocked_split_limit sub_a_timeout depth=$($attempt+1)"; exit 3
-        }
-        $curPrompt = "$sub\a\prompt.txt"; $curOut = "$sub\a"; $splitParent = $curPrompt
-        continue
-    }
-    $rb = Invoke-Runner "$sub\b\prompt.txt" "$sub\b"
-    if ($rb.ExitCode -eq -2) {
-        if (($attempt+1) -ge $MaxSplitDepth) {
-            Merge-Evidence "$sub\b" -2 "blocked_split_limit" ($attempt+1) $curPrompt
-            Write-Output "EXIT_CODE=3 status=blocked_split_limit sub_b_timeout depth=$($attempt+1)"; exit 3
-        }
-        $curPrompt = "$sub\b\prompt.txt"; $curOut = "$sub\b"; $splitParent = $curPrompt
-        continue
-    }
-    # 子项 evidence 已在 $sub\a / $sub\b 各自落盘（exit_code=-2 保留）；父 evidence 的 exit_code=$worse 不覆盖子项 -2
-    $worse = if ($ra.ExitCode -ne 0) { $ra.ExitCode } else { $rb.ExitCode }
-    $status = if ($worse -eq 0) { "split_success" } else { "split_partial" }
-    Merge-Evidence $OutDir $worse $status $attempt $curPrompt
+    $worse = 0
+    foreach ($res in $results) { if ($res.ExitCode -ne 0) { $worse = $res.ExitCode; break } }
+    $status = if ($worse -eq 0) { "prechunk_success" } else { "prechunk_partial" }
+    Merge-Evidence $OutDir $worse $status 1 $PromptFile
     Write-Output "EXIT_CODE=$worse status=$status"
     exit $worse
-}
+}  # end if ($lines0.Count -gt $prechunkTrigger)
+# 未预拆分（prompt ≤ 60 行）：单任务执行
+$res = Invoke-TaskWithSplit -TaskPrompt $PromptFile -TaskOut $OutDir -AttemptBase 1 -InitialSplitParent $null
+Write-Output "EXIT_CODE=$($res.ExitCode) status=$($res.Status)"
+exit $res.ExitCode

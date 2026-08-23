@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.26
+version: 13.0.27
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.26
+# 四步法 Harness（opencode 适配层）v13.0.27
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -145,6 +145,7 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 - 不得绕过 `run_step.ps1` 直接调用 `Task`、`harness-*` subagent 或 runner。`opencode-sub` 仅允许由 `bindings.step4.agent` 指定；任何其他 step 都必须在启动后端前 fail-closed，绝不返回 99。
 - 合法 `step4/opencode-sub` 的 `EXIT_CODE=99` 仅是 Step 0 校验后的 orchestrator 移交信号。orchestrator 只能据此调度绑定角色，返回后继续既定 evidence 写入和只读快照断言，不能重新解释或替换 binding。
 - 每次 CLI、超时、普通失败、拆分壁垒和合法 99 移交都必须留下同一 schema 的 `evidence.json`；99 的状态为 `handoff_pending`，不是 evidence 豁免。
+- 写工具（patch/write_file 等）被 gate 拦截时，禁止换用 python heredoc / `python -c` / `node -e` / shell 重定向直写、直调 `run_cli.py` 或 runner/subagent 等任何等价路径完成同一写入（shared/core-logic.md §8 类别 F）；唯一合法出口是走编排层流程或向用户报告。
 
 ## 违规处理
 
@@ -153,6 +154,10 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.27 (2026-08-23)
+
+- **两轮自修复补全（绑定防护 + 基础设施五缺陷修复 + §8-F）**：第一轮补强绑定防护，明确禁止将模型或 CLI 语境描述误解为改绑指令；第二轮修复基础设施缺陷，包括 Codex 完整 bundle 的版本哈希子目录识别、拆分子分片返回后的 step4 只读断言及相关 runner 一致性问题；共享规则新增 §8 类别 F，禁止 gate-bypass writing。三平台版本号 13.0.26 → 13.0.27。
 
 ### v13.0.26 (2026-08-21)
 - **F-P-01 ~ F-P-04**：强制四步唯一经 `run_step.ps1` 启动；`opencode-sub` 仅可作为已验证 step4 binding 的 99 移交；Step 0 对损坏 JSON 明确 fail-closed；修复实际 runner 调用，并统一 runner/orchestrator 的 evidence schema。

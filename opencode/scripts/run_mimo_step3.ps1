@@ -1,5 +1,4 @@
-# V10 强制：本 runner 默认 Timeout 180-900s、末尾集中输出 EXIT_CODE/ELAPSED/RAW，无 Tee-Object 实时透传；文件头原仅讲 stdin 管道死锁，现补充：bash 调用必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 >120s 的 mimo/codex 长 prompt 必被 120s 截断、EXIT/ELAPSED 丢失、误判 hang（违规10）
-param(
+﻿# V10 强制：本 runner 默认 Timeout 180s、末尾集中输出 EXIT_CODE/ELAPSED/RAW，无 Tee-Object 实时透传；bash 调用必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 >120s 的 mimo/codex 长 prompt 必被 120s 截断、EXIT/ELAPSED 丢失、误判 hang（违规10）
 param(
     [Parameter(Mandatory = $true)]
     [string]$PromptFile,
@@ -9,7 +8,7 @@ param(
     [string]$OutDir,
     [string]$Model = "xiaomi/mimo-v2.5-pro",
     [string]$Step = "step3",
-    [int]$TimeoutSeconds = 900,
+    [int]$TimeoutSeconds = 180,
     [string]$Permissions = "dangerously-skip-permissions"
 )
 
@@ -34,53 +33,102 @@ $msgFile = Join-Path $OutDir $(if ($Step -eq "step4") { "step4-review.md" } else
 # 注：argv 路径下的字符拆词风险由 F-P01（事件驱动 async drain）+ F-P02（套娃保留 + UTF-8）共同避免
 
 $started = Get-Date
-# --- F-MIMO-HANG: 用 .NET 同步 Process + stdin pipe 替换 Start-Job 异步 ---
-# F-MIMO-ROOTFIX: 直接启动 node.exe + bin/mimo，绕过 .ps1 shim 与 powershell.exe 层
+$warnings = @()
+
+# 仅对已存在的文件/目录取 8.3 短路径。无法解析、8.3 被卷禁用或路径不存在时返回原路径；
+# 命令串仍会为每个路径保留双引号，因此含空格的兜底路径也可安全传递给 cmd。
+function ConvertTo-ShortPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+    if (-not $resolved) {
+        return $Path
+    }
+
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        $fullPath = $resolved.Path
+        $item = Get-Item -LiteralPath $fullPath -Force
+
+        if ($item.PSIsContainer) {
+            $shortPath = $fso.GetFolder($fullPath).ShortPath
+        } else {
+            $shortPath = $fso.GetFile($fullPath).ShortPath
+        }
+
+        if ($shortPath) { return $shortPath }
+    } catch {
+        # 保留原路径；下方命令串的双引号负责含空格路径的兜底。
+    }
+
+    return $resolved.Path
+}
+
 $npmDir = Split-Path $mimo.Source -Parent
 $nodeExe = if (Test-Path (Join-Path $npmDir "node.exe")) { Join-Path $npmDir "node.exe" } else { (Get-Command node).Source }
 $mimoJs = Join-Path $npmDir "node_modules\@mimo-ai\cli\bin\mimo"
 if (-not (Test-Path -LiteralPath $mimoJs)) { throw "Cannot resolve mimo JS entry: $mimoJs" }
-$psi = [System.Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = $nodeExe
-$psi.Arguments = "`"$mimoJs`" run -m $Model --dir `"$WorkspaceDir`" --dangerously-skip-permissions"
-$psi.RedirectStandardInput = $true
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
+
+$stdoutFile = Join-Path $OutDir "mimo_step3_stdout.tmp"
+$stderrFile = Join-Path $OutDir "mimo_step3_stderr.tmp"
+Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+
+$nodeExeShort = ConvertTo-ShortPath $nodeExe
+$mimoJsShort = ConvertTo-ShortPath $mimoJs
+$workspaceDirShort = ConvertTo-ShortPath $WorkspaceDir
+$promptFileShort = ConvertTo-ShortPath $PromptFile
+$stdoutFileShort = ConvertTo-ShortPath $stdoutFile
+$stderrFileShort = ConvertTo-ShortPath $stderrFile
+
+$commandLine = ('"{0}" "{1}" run -m "{2}" --dir "{3}" --dangerously-skip-permissions < "{4}" 1> "{5}" 2> "{6}"' -f `
+    $nodeExeShort, $mimoJsShort, $Model, $workspaceDirShort, $promptFileShort, $stdoutFileShort, $stderrFileShort)
+
+$batchFile = Join-Path $OutDir "mimo_step3_run.cmd"
+[System.IO.File]::WriteAllText(
+    $batchFile,
+    "@echo off`r`n$commandLine`r`n",
+    [System.Text.Encoding]::ASCII
+)
+$batchFileShort = ConvertTo-ShortPath $batchFile
+$batchFileArg = if ($batchFileShort -match '\s') { '"' + $batchFileShort + '"' } else { $batchFileShort }
+
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $env:ComSpec
+$psi.Arguments = '/c ' + $batchFileArg
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true
+$psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
 
-$proc = [System.Diagnostics.Process]::Start($psi)
+$proc = New-Object System.Diagnostics.Process
+$proc.StartInfo = $psi
+
 try {
-    # F-P01/F-P09: 关键顺序——先启动 async drain 双流，再 Write stdin
-    # 避免对端 stdout/stderr 满 4KB 时 mimo 阻塞 → stdin 写端阻塞 → 死锁
-    $script:outBuf = ""
-    $script:errBuf = ""
-    $proc.add_OutputDataReceived({ if ($EventArgs.Data) { $script:outBuf += $EventArgs.Data + "`n" } })
-    $proc.add_ErrorDataReceived({ if ($EventArgs.Data) { $script:errBuf += $EventArgs.Data + "`n" } })
-    $proc.BeginOutputReadLine()
-    $proc.BeginErrorReadLine()
-    # 现在 stdin Write 安全（双流已 drain，不会阻塞）
-    # PS 5.1 无 StandardInputEncoding 属性，必须字节直写 UTF-8 保障中文 prompt 不乱码
-    $utf8 = [System.Text.Encoding]::UTF8
-    $bytes = $utf8.GetBytes($prompt)
-    $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
-    $proc.StandardInput.Close()
-    # --- F-MIMO-HANG: WaitForExit 之后再读 buffer ---
-    # WaitForExit(ms) 是 .NET 提供的唯一带超时机制的退出检测
-    # async drain 已把数据收进 $script:outBuf/$script:errBuf，不再用同步 ReadToEnd
+    if (-not $proc.Start()) { throw "Failed to start cmd.exe" }
+
     $exited = $proc.WaitForExit($TimeoutSeconds * 1000)
     if (-not $exited) {
-        try { $proc.Kill() } catch {}
+        $killedPid = $proc.Id
+        & taskkill.exe /PID $killedPid /T /F *> $null
+        $taskkillExitCode = $LASTEXITCODE
+        $warnings += "timeout: taskkill /PID $killedPid /T /F exit_code=$taskkillExitCode"
         try { $proc.WaitForExit(5000) } catch {}
         $exitCode = -2
         $output = @("TIMEOUT after ${TimeoutSeconds}s")
     } else {
         $exitCode = $proc.ExitCode
-        # F-P03: WaitForExit 后给事件循环 200ms 排空最后数据，再读 buffer
-        Start-Sleep -Milliseconds 200
         $output = @()
-        if ($script:outBuf) { $output += $script:outBuf.Split("`n") }
-        if ($script:errBuf) { $output += $script:errBuf.Split("`n") }
+
+        if (Test-Path -LiteralPath $stdoutFile) {
+            $stdout = [System.IO.File]::ReadAllText($stdoutFile, [System.Text.Encoding]::UTF8)
+            if ($stdout) { $output += [regex]::Split($stdout, "`r?`n") }
+        }
+        if (Test-Path -LiteralPath $stderrFile) {
+            $stderr = [System.IO.File]::ReadAllText($stderrFile, [System.Text.Encoding]::UTF8)
+            if ($stderr) { $output += [regex]::Split($stderr, "`r?`n") }
+        }
     }
 } finally {
     $proc.Dispose()
@@ -122,7 +170,7 @@ $evidence = [ordered]@{
     output_files     = @{ raw = $rawFile; output = $msgFile; evidence = (Join-Path $OutDir "evidence.json") }
     split_parent     = $null
     timestamp        = $started.ToString("o")
-    warnings         = @()
+    warnings         = $warnings
     binding_snapshot = @{ agent = "mimo"; model = $Model; permission_mode = $Permissions }
 }
 $evFile = Join-Path $OutDir "evidence.json"

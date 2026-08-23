@@ -1,4 +1,4 @@
-﻿{
+{
     "schema_version":  1,
     "locked":  true,
     "bindings":  {
@@ -10,15 +10,15 @@
                      "step2":  {
                                    "agent":  "codex",
                                    "model":  null,
-                                   "permission_mode":  "bypassPermissions"
+                                   "permission_mode":  "read_only"
                                },
                      "step3":  {
-                                   "agent":  "codex",
+                                   "agent":  "mimo",
                                    "model":  null,
-                                   "permission_mode":  "bypassPermissions"
+                                   "permission_mode":  "dangerously-skip-permissions"
                                },
                      "step4":  {
-                                   "agent":  "opencode-sub",
+                                   "agent":  "codex",
                                    "model":  null,
                                    "permission_mode":  "default"
                                }
@@ -116,7 +116,48 @@
                                   "step":  "all",
                                   "agent":  "codex/opencode-sub",
                                   "authorization":  "用户显式授权变更：codex 请求 GPT-5.6 Luna Max 但 ChatGPT 账号返回 model not supported，fallback 到 codex 默认模型（null）；step1/2/3=codex(default), step4=opencode-sub；已验证 codex 默认可执行"
+                              },
+                              {
+                                  "at":  "2026-08-22T14:54:28+08:00",
+                                  "step":  "step2",
+                                  "agent":  "codex",
+                                  "authorization":  "用户显式授权：V-2026-08-22-step2-overreach 后，bindings.step2.permission_mode 由 bypassPermissions 改为 read_only（codex --sandbox read-only 技术强制方案者只读；agent/模型族不变）。注：manage_binding.ps1 -AuthorizeStep 不支持 permission_mode 字段修改，经用户问答授权后手工编辑本文件并追加本条目"
+                              },
+                              {
+                                  "at":  "2026-08-23T10:24:40+08:00",
+                                  "step":  "all",
+                                  "agent":  "claude/codex",
+                                  "authorization":  "用户显式授权（会话原文：step1 /2/3 用claude code cli，step4 用codex）：harness-self-fix-0822b 任务起 bindings 改为 step1=claude/default、step2=claude/default、step3=claude/bypassPermissions、step4=codex/default；step1/2 的 permission_mode 由 read_only 改 default 因 run_claude_step12.ps1 ValidateSet 不接受 read_only，claude -p 非交互模式写操作默认被拒=行为性只读；step3(claude)≠step4(codex) 模型族约束满足；manage_binding.ps1 -AuthorizeStep 不支持多字段修改故手工编辑本文件并追加本条目"
+                              },
+                              {
+                                  "at":  "2026-08-23T19:06:25+08:00",
+                                  "step":  "all",
+                                  "agent":  "codex/kimi",
+                                  "authorization":  "用户显式授权（会话原文：step 1/2/3 用codex cli，step 4 用kimi code cli，先把工作做完，然后解决Claude code cli 调用不正常的问题）：precommit-audit-20260823 任务起 bindings 改为 step1=codex/read_only、step2=codex/read_only、step3=codex/bypassPermissions、step4=kimi/default；claude 代理劣化致审计超时故切换；step3(codex/openai)≠step4(kimi/moonshot) 族约束满足；manage_binding.ps1 不支持多字段修改故脚本化编辑本文件并追加本条目"
+                              },
+                              {
+                                  "at":  "2026-08-23T19:15:02+08:00",
+                                  "step":  "step3",
+                                  "agent":  "mimo",
+                                  "authorization":  "claude/codex 改绑补充（会话原文：step 3 用mimo cli）：precommit-audit-20260823 任务 step3 由 codex 改为 mimo，bindings.step3 = mimo / dangerously-skip-permissions（run_mimo_step3.ps1 硬编码该参数，permission_mode 字段按其语义记录）；step3(mimo/xiaomi)≠step4(kimi/moonshot) 族约束满足；其余步骤绑定不变"
+                              },
+                              {
+                                  "at":  "2026-08-23T19:35:18+08:00",
+                                  "step":  "step3",
+                                  "agent":  "codex",
+                                  "authorization":  "自举悖论偏差授权（用户指示\"先修 mimo runner\"）：mimo-runner-hang-20260823 子任务中待修复对象即 run_mimo_step3.ps1 本体，经其执行 step3 会触发同一挂死（自举悖论），故本子任务 step3 临时改用 codex/bypassPermissions 落地补丁；补丁验证将经修复后的 mimo runner 以 PONG 快测与 precommit 任务真实报告双重确认；仅本子任务有效，precommit-audit-20260823 的 step3=mimo 绑定不变"
+                              },
+                              {
+                                  "at":  "2026-08-23T20:11:38+08:00",
+                                  "step":  "step3",
+                                  "agent":  "mimo",
+                                  "authorization":  "恢复 precommit-audit-20260823 任务的 step3=mimo 绑定（mimo runner 挂死已修复并通过 PONG/中文快测）；mimo-runner-hang-20260823 子任务的临时 codex 偏差按记录作废，step3 恢复用户既定绑定"
+                              },
+                              {
+                                  "at":  "2026-08-23T20:56:20+08:00",
+                                  "step":  "step4",
+                                  "agent":  "codex",
+                                  "authorization":  "后续 step4 换 codex cli（会话指令原文）：precommit-audit-20260823 任务及其后所有任务的 bindings.step4 由 kimi 改为 codex；step4 保持 codex 只读沙箱强制（runner 对 step4 恒强制 read-only），且 F-P1 bundle 自动解析已就绪（本机 %LOCALAPPDATA%\\OpenAI\\Codex\\bin\\110b3d66a02d864e 三件套齐全，无需手动 PATH 前置）；step3(mimo)≠step4(codex) 族约束满足"
                               }
                           ]
 }
-

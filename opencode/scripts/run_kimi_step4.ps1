@@ -1,4 +1,4 @@
-# V10 强制：本 runner 默认 300s、末尾输出 EXIT_CODE；bash 必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 120s 截断
+﻿# V10 强制：本 runner 默认 180s、末尾输出 EXIT_CODE；bash 必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log，否则 120s 截断
 param(
     [Parameter(Mandatory = $true)]
     [string]$PromptFile,
@@ -8,7 +8,7 @@ param(
     [string]$OutDir,
     [string]$Step = "step4",
     [string]$Model,
-    [int]$TimeoutSeconds = 300,
+    [int]$TimeoutSeconds = 180,
     [string]$Permissions = "default"
 )
 

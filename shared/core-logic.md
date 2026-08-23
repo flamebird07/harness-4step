@@ -94,6 +94,7 @@ Step 4 必须读取 Step 3 验证状态后决定是否补跑回归：
 - C. 跳步 / 并行：未按 step1→4 顺序或违规并行
 - D. **验证被拦截（validation-blocked）**：step3 需要自动化验证（语法/回归），但命令被权限/环境拦截（approval 提示、工具缺失、沙箱禁测）——必须如实记录 `验证状态: blocked(<命令>/<原因>)` 或 `not-run(<原因>)` 并传给 step4；**不得**以"人工目检"自评通过（§2b 验证门）
 - E. 复审者假通过：step4 在验证未完成/被拦截时仍判 `通过`
+- F. **旁路写入（gate-bypass writing）**：主 agent 或任一步骤在 patch/write_file 等写工具被 gate 拦截后，换用任何等价手段直写文件——python heredoc / `python -c`、`node -e`、shell 重定向直写目标代码、直调 `run_cli.py` 改仓库文件、未经编排层派发直调 runner/subagent、以及非「编排层精确回退」用途的 `git checkout`/`git restore`。「换个工具做同一件被拦的事」与直接违规同罪：命中即停止当前动作，按本节处置 1)-3) 回退并记录。
 **处置（任一类别命中）**：
 1. 用 `baseline.diff`/备份精确回退（step4 越权写文件：适配层 F-08 已自动从快照回退）
 2. 从违规点起重走流程

@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.26
+version: 13.0.27
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.26 — 四步唯一入口 + opencode-sub 仅 step4 + Step0 JSON fail-closed + evidence 统一)
+# Harness 4-Step Method (v13.0.27 — 四步唯一入口 + opencode-sub 仅 step4 + Step0 JSON fail-closed + evidence 统一)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.27 (2026-08-23)
+
+- **两轮自修复补全（绑定防护 + 基础设施五缺陷修复 + §8-F）**：第一轮补强绑定防护，明确禁止将模型或 CLI 语境描述误解为改绑指令；第二轮修复基础设施缺陷，包括 Codex 完整 bundle 的版本哈希子目录识别、拆分子分片返回后的 step4 只读断言及相关 runner 一致性问题；共享规则新增 §8 类别 F，禁止 gate-bypass writing。三平台版本号 13.0.26 → 13.0.27。
 
 ### v13.0.26 (2026-08-21)
 
