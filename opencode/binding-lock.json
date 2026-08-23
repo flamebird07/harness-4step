@@ -3,19 +3,19 @@
     "locked":  true,
     "bindings":  {
                      "step1":  {
-                                   "agent":  "codex",
+                                   "agent":  "claude",
                                    "model":  null,
-                                   "permission_mode":  "read_only"
+                                   "permission_mode":  "default"
                                },
                      "step2":  {
-                                   "agent":  "codex",
+                                   "agent":  "claude",
                                    "model":  null,
-                                   "permission_mode":  "read_only"
+                                   "permission_mode":  "default"
                                },
                      "step3":  {
-                                   "agent":  "mimo",
+                                   "agent":  "claude",
                                    "model":  null,
-                                   "permission_mode":  "dangerously-skip-permissions"
+                                   "permission_mode":  "bypassPermissions"
                                },
                      "step4":  {
                                    "agent":  "codex",
@@ -158,6 +158,12 @@
                                   "step":  "step4",
                                   "agent":  "codex",
                                   "authorization":  "后续 step4 换 codex cli（会话指令原文）：precommit-audit-20260823 任务及其后所有任务的 bindings.step4 由 kimi 改为 codex；step4 保持 codex 只读沙箱强制（runner 对 step4 恒强制 read-only），且 F-P1 bundle 自动解析已就绪（本机 %LOCALAPPDATA%\\OpenAI\\Codex\\bin\\110b3d66a02d864e 三件套齐全，无需手动 PATH 前置）；step3(mimo)≠step4(codex) 族约束满足"
+                              },
+                              {
+                                  "at":  "2026-08-23T22:12:38+08:00",
+                                  "step":  "all",
+                                  "agent":  "claude/codex",
+                                  "authorization":  "用户显式授权（会话指令：走四步法修复 guard 缺陷，step 1/2/3 用Claude code，step 4 用codex）：guard-fix-20260823 任务起 bindings step1/2/3 改 claude（step1=claude/default、step2=claude/default、step3=claude/bypassPermissions），step4 保持 codex/default；step3(claude)≠step4(codex) 族约束满足；claude -p 非交互写操作默认被拒=行为性只读用于 step1/2"
                               }
                           ]
 }

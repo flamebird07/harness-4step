@@ -39,7 +39,7 @@ if ($Step -eq "step4") {
     if (Test-Path -LiteralPath $guardScript) {
         try { . $guardScript; $step4GuardLoaded = $true } catch { Write-Output "WARNING: step4 guard load failed: $_" }
         if ($step4GuardLoaded) {
-            try { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null; Save-Step4Snapshot -WorkspaceDir $WorkspaceDir -OutDir $OutDir } catch { Write-Output "WARNING: Save-Step4Snapshot failed: $_" }
+            try { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null; Save-Step4Snapshot -WorkspaceDir $WorkspaceDir -OutDir $OutDir } catch { throw "Save-Step4Snapshot failed — step4 只读强制 fail-closed（不得静默继续）: $_" }
         }
     }
 }
