@@ -176,6 +176,13 @@ def load_binding_lock(path: Path | None = None) -> dict[str, Any]:
         raise ValueError(f"Invalid binding lock: {source}")
     if set(data["bindings"]) != set(DEFAULT_CONFIG):
         raise ValueError("Binding lock must define exactly step1, step2, step3, step4")
+    # F-P8：绑定 value 类型校验，防异构锁混入。Hermes schema 为字符串；若 opencode 嵌套对象锁
+    # 被误复制到此路径，dict 值会使 config.agents[dict] 查找崩溃，fail-closed 拒绝。
+    for step, agent in data["bindings"].items():
+        if not isinstance(agent, str):
+            raise ValueError(
+                f"Invalid binding lock: {source} — '{step}' 绑定值必须为字符串（Hermes schema），"
+                f"实际为 {type(agent).__name__}（可能是 opencode 嵌套对象锁被误复制到此路径）")
     return data
 
 
@@ -185,23 +192,9 @@ def authorize_binding_change(step: str, agent: str, authorization: str) -> dict[
         raise ValueError("Unknown step")
     if agent not in AGENT_CLI:
         raise ValueError("Unknown agent")
-    # F-B-03：绑定变更仅用于任务开始前的基础设施配置调整。
-    # 若存在进行中的任务工作区（harness-workspace/<task>/todo.json 且未完成），拒绝改绑，
-    # 防止用「改绑」绕过当前任务的失败/质量问题（v13.0.9#5）。
-    ws = Path.home() / ".hermes" / "harness-workspace"
-    if ws.is_dir():
-        for task_dir in ws.iterdir():
-            todo = task_dir / "todo.json"
-            if todo.is_file():
-                data = None
-                try:
-                    data = json.loads(todo.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-                if data and not all(x.get("state") in {"completed", "split"} for x in data.get("items", [])):
-                    raise ValueError(
-                        "绑定变更被拒绝：任务进行中不允许改绑（v13.0.9#5）。"
-                        "失败的 step 请走拆分（F-A-03）；如需按次换 agent 用 --agent-override --authorization。")
+    # F-P1：移除 v13.0.9#5 进行中任务改绑 gate（违反 P1「用户授权即可改」/ P3「执行中允许切换」）。
+    # 改绑已强制 ≥12 字符授权文本并写入 authorization_log（见下 209-212），审计意图已满足；
+    # 「防绕过质量」由 step4 只读 guard + evidence 校验承担，而非阻塞改绑。
     if len(authorization.strip()) < 12:
         raise ValueError("Provide the user's explicit authorization text (at least 12 characters)")
     path = _binding_lock_path(); data = load_binding_lock(path)
@@ -621,6 +614,7 @@ if __name__ == "__main__":
     p.add_argument("--authorize-binding-change", metavar="STEP")
     p.add_argument("--agent", metavar="AGENT")
     p.add_argument("--agent-override", metavar="AGENT", help="按次临时覆盖本步骤 agent（须同时给 --authorization）")
+    p.add_argument("--persist", action="store_true", help="配合 --agent-override：把覆盖持久化为绑定（写 binding-lock.json + authorization_log），否则仅按次")
     p.add_argument("--authorization", metavar="USER_TEXT")
     p.add_argument("--todo-init", metavar="TITLE")
     p.add_argument("--todo-add", metavar="ITEM_JSON")
@@ -636,6 +630,10 @@ if __name__ == "__main__":
     p.add_argument("--todo-list", action="store_true")
     p.add_argument("--todo-recover", metavar="ITEM_ID")
     a = p.parse_args()
+    # F-P9Rev2：--persist 必须配合 --agent-override，校验上移到所有早退分支之前，
+    # 否则 --show-config --persist 等组合会绕过校验静默退出。
+    if a.persist and not a.agent_override:
+        p.error("--persist 必须配合 --agent-override 使用")
     if a.show_config:
         print_config(); sys.exit(0)
     if a.show_bindings:
@@ -708,18 +706,30 @@ if __name__ == "__main__":
     else:
         prompt = a.prompt or ""
     if not prompt: print("Need --prompt or --prompt-file", file=sys.stderr); sys.exit(1)
+    # F-P10Rev2：持久化改绑前移到 todo_begin_step 之前——authorize_binding_change 失败时
+    # exit(1) 不会遗留已 started 的 todo（todo 尚未被触碰，无需回滚）。
+    run_agent_override = a.agent_override
+    if a.agent_override and a.persist:
+        try:
+            authorize_binding_change(a.step, a.agent_override, a.authorization.strip())
+        except ValueError as e:
+            print(json.dumps({"type": "harness_step_report", "success": False, "step": a.step,
+                              "todo_id": a.todo_id, "failure_reason": str(e)}, ensure_ascii=False, indent=2))
+            sys.exit(1)
+        # 已持久化：run_cli 经 load_config 读取新绑定，不传 agent_override（避免双源），不写 per-run 日志。
+        run_agent_override = None
     try:
         todo_begin_step(a.task_id, a.todo_id, a.step)
     except (ValueError, FileNotFoundError) as e:
         print(json.dumps({"type": "harness_step_report", "success": False, "step": a.step,
                           "todo_id": a.todo_id, "failure_reason": str(e)}, ensure_ascii=False, indent=2))
         sys.exit(1)
-    # F2-L2-03：审计时机下移到 begin_step 成功后、run_cli 调用前。
-    if a.agent_override:
+    # F2-L2-03：按次审计下移到 begin_step 成功后、run_cli 调用前。
+    if a.agent_override and not a.persist:
         _log_per_run_override(a.task_id, a.step, a.agent_override, a.authorization.strip())
     try:
         r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt,
-                    timeout_seconds=a.timeout, agent_override=a.agent_override)
+                    timeout_seconds=a.timeout, agent_override=run_agent_override)
     except BaseException as e:
         record_violation("run_cli_raised", str(e))
         # Fallback: never orphan a step as "started". If run_cli itself raises,

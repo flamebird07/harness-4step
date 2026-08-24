@@ -16,9 +16,11 @@ $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Step 0：加载 binding-lock.json fail-closed 校验（详见 F-PBINDING）
-$SkillDir = Split-Path -Parent $PSScriptRoot
-$lockFile = Join-Path $SkillDir "binding-lock.json"
-if (-not (Test-Path -LiteralPath $lockFile)) { throw "binding-lock.json missing at $lockFile" }
+# F-P3：执行层与管理层读同一锁（与 manage_binding.ps1 Resolve-LockPath 同源）。
+# repo opencode/binding-lock.json 退化为 -InstallFromRepo 种子模板，执行时不再直读。
+$lockFile = $env:OPCODE_BINDING_LOCK
+if (-not $lockFile) { $lockFile = Join-Path $HOME ".config\opencode\harness\binding-lock.json" }
+if (-not (Test-Path -LiteralPath $lockFile)) { throw "binding-lock.json missing at $lockFile — 先跑 manage_binding.ps1 -InstallFromRepo 从仓库模板安装本机锁" }
 try {
     $lock = Get-Content -LiteralPath $lockFile -Encoding UTF8 -Raw | ConvertFrom-Json -ErrorAction Stop
 } catch {

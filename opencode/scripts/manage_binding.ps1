@@ -28,6 +28,7 @@ param(
     [string]$By,
     [string]$Reason,
     [string]$AuthorizeStep,
+    [string]$AuthorizeSteps,
     [string]$Agent,
     [string]$Authorization
 )
@@ -178,6 +179,53 @@ if ($RecordViolation) {
     exit 0
 }
 
+# F-P5：批量授权，单事务 read→改全部→Test-Step4FamilyDifferent→原子写（避免半改状态触发 fail-closed）。
+# 接受 JSON 映射 {"step1":"claude","step4":"codex"}。-AuthorizeStep 保留向后兼容。
+if ($AuthorizeSteps) {
+    if (-not $Authorization -or $Authorization.Trim().Length -lt 12) {
+        Fail-Cli "必须提供用户显式授权原文（至少 12 字符）"
+    }
+    try { $map = $AuthorizeSteps | ConvertFrom-Json } catch { Fail-Cli "-AuthorizeSteps 非合法 JSON 映射 {step:agent}: $_" }
+    if ($null -eq $map) { Fail-Cli "-AuthorizeSteps 映射为空" }
+    $pairs = @()
+    foreach ($prop in $map.PSObject.Properties) {
+        $s = $prop.Name; $ag = $prop.Value
+        if ($KNOWN_STEPS -notcontains $s) { Fail-Cli "未知步骤：$s" }
+        if (-not $AGENT_FAMILY.ContainsKey($ag)) { Fail-Cli "未知 agent：$ag" }
+        $pairs += [pscustomobject]@{ Step = $s; Agent = $ag }
+    }
+    # F-P11Rev2：显式拒绝零项映射——{} 通过 $null 检查但 $pairs 为空，
+    # 不拒绝会写 step:"all"/agent:"" 无效日志。
+    if ($pairs.Count -eq 0) { Fail-Cli "-AuthorizeSteps 映射为空（无有效 step:agent 对）" }
+    $path = Resolve-LockPath
+    $lock = Load-Lock $path
+    # 授权前校验 CLI 可用性（opencode-sub 为 subagent，无需系统命令）
+    foreach ($p in $pairs) {
+        if ($p.Agent -ne "opencode-sub") {
+            $exe = Get-Command $p.Agent -ErrorAction SilentlyContinue
+            if (-not $exe) { Fail-Cli "授权失败：PATH 无 $($p.Agent)，先安装/配置后再授权" }
+        }
+    }
+    # 单事务：全部 Set-BoundAgent 后再统一校验约束 + 原子写（不满足约束则整体不落盘）
+    foreach ($p in $pairs) { Set-BoundAgent $lock $p.Step $p.Agent }
+    Test-Step1Step2Supported $lock
+    Test-Step4FamilyDifferent (Get-BoundAgent $lock step3) (Get-BoundAgent $lock step4)
+    $entry = [pscustomobject]@{
+        at = (Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz")
+        step = "all"
+        agent = (($pairs | ForEach-Object { "$($_.Step)=$($_.Agent)" }) -join ",")
+        authorization = $Authorization.Trim()
+    }
+    if ($null -eq $lock.authorization_log) { $lock.authorization_log = @() }
+    $lock.authorization_log += $entry
+    $json = $lock | ConvertTo-Json -Depth 6
+    $tmp = $path + ".tmp"
+    Set-Content -LiteralPath $tmp -Value $json -Encoding UTF8   # 原子写：先写临时文件再替换
+    Move-Item -LiteralPath $tmp -Destination $path -Force
+    Write-Output $json
+    Write-Output "AUTHORIZED_STEPS"
+    exit 0
+}
 if ($AuthorizeStep) {
     if ($KNOWN_STEPS -notcontains $AuthorizeStep) { Fail-Cli "未知步骤：$AuthorizeStep" }
     if (-not $AGENT_FAMILY.ContainsKey($Agent)) { Fail-Cli "未知 agent：$Agent" }
@@ -214,5 +262,5 @@ if ($AuthorizeStep) {
     exit 0
 }
 
-Write-Output "用法：manage_binding.ps1 -ShowBindings | -Check | -InstallFromRepo | -RecordViolation -Id <id> -By <actor> -Reason <文本> | -AuthorizeStep <step> -Agent <agent> -Authorization <授权原文>"
+Write-Output "用法：manage_binding.ps1 -ShowBindings | -Check | -InstallFromRepo | -RecordViolation -Id <id> -By <actor> -Reason <文本> | -AuthorizeStep <step> -Agent <agent> -Authorization <授权原文> | -AuthorizeSteps '{""step1"":""claude"",""step4"":""codex""}' -Authorization <授权原文>"
 exit 1
