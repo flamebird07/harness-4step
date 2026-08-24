@@ -53,18 +53,22 @@ $runner = switch ($b.agent) {
     "codex"  { Join-Path $PSScriptRoot "run_codex_step4.ps1" }
     "kimi"   { Join-Path $PSScriptRoot "run_kimi_step4.ps1" }
     "opencode-sub" {
-        if ($Step -ne "step4") {
-            throw "opencode-sub is authorized only for bindings.step4 — fail-closed"
-        }
         ""
-    }  # 无 runner 脚本：仅合法 step4 binding 由 orchestrator 接管
+    }  # 无 runner 脚本：合法 binding 由 orchestrator 的 Task 工具接管
     default  { throw "unknown agent in binding-lock.json: $($b.agent)" }
 }
 
 function Invoke-Runner([string]$pf, [string]$od) {
     if ($b.agent -eq "opencode-sub") {
-        # Step 0 已验证：只有 bindings.step4.agent=opencode-sub 才能移交 orchestrator。
-        return [pscustomobject]@{ ExitCode = 99; Output = @("BINDING=opencode-sub", "EXIT_CODE=99") }
+        # Step 0 已验证绑定；所有四步均可移交 OpenCode 的原生 Task，绝不转调其他 CLI。
+        $subagent = switch ($Step) {
+            "step1" { "harness-auditor" }
+            "step2" { "harness-planner" }
+            "step3" { "harness-implementer" }
+            "step4" { "harness-verifier" }
+            default { throw "Unknown step for opencode-sub: $Step" }
+        }
+        return [pscustomobject]@{ ExitCode = 99; Output = @("BINDING=opencode-sub", "STEP=$Step", "SUBAGENT=$subagent", "EXIT_CODE=99") }
     }
     $extra = @{ PromptFile = $pf; WorkspaceDir = $WorkspaceDir; OutDir = $od; TimeoutSeconds = $TimeoutSeconds }
     if ($b.agent -eq "claude") { $extra["Step"] = $Step; $extra["Permissions"] = $b.permission_mode }
@@ -144,7 +148,9 @@ function Invoke-TaskWithSplit {
         $att = $AttemptBase + $attempt - 1
         if ($r.ExitCode -eq 99) {
             Merge-Evidence $curOut 99 "handoff_pending" $att $splitParent
-            return [pscustomobject]@{ ExitCode=99; Status="handoff_pending"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+            # 信号不能在本函数内 Write-Output：调用方会把函数输出赋值给 $res，
+            # 导致信号被吞掉。作为字段返回，最外层再写到 stdout。
+            return [pscustomobject]@{ ExitCode=99; Status="handoff_pending"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent; Output=$r.Output }
         }
         if ($Step -eq "step4" -and $step4GuardLoaded -and $b.agent -ne "opencode-sub") {
             try {
@@ -292,7 +298,10 @@ if ($lines0.Count -gt $prechunkTrigger) {
         $results += $res
         # opencode-sub 合法 handoff：移交 orchestrator，终止后续分片调度
         if ($res.ExitCode -eq 99) {
-            Write-Output "STEP4_GUARD_SNAPSHOT=$OutDir/pre-step4.sha256 (Assert deferred to orchestrator for opencode-sub)"
+            foreach ($line in $res.Output) { Write-Output $line }
+            if ($Step -eq "step4") {
+                Write-Output "STEP4_GUARD_SNAPSHOT=$OutDir/pre-step4.sha256 (Assert deferred to orchestrator for opencode-sub)"
+            }
             Merge-Evidence $OutDir 99 "handoff_pending" 1 $PromptFile
             Write-Output "EXIT_CODE=99"; exit 99
         }
@@ -306,5 +315,8 @@ if ($lines0.Count -gt $prechunkTrigger) {
 }  # end if ($lines0.Count -gt $prechunkTrigger)
 # 未预拆分（prompt ≤ 60 行）：单任务执行
 $res = Invoke-TaskWithSplit -TaskPrompt $PromptFile -TaskOut $OutDir -AttemptBase 1 -InitialSplitParent $null
+if ($res.ExitCode -eq 99) {
+    foreach ($line in $res.Output) { Write-Output $line }
+}
 Write-Output "EXIT_CODE=$($res.ExitCode) status=$($res.Status)"
 exit $res.ExitCode

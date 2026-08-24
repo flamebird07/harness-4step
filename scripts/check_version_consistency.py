@@ -21,6 +21,7 @@ v13.0.22 起强制执行：发布前必须跑本脚本通过。
 
 import sys
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -66,6 +67,20 @@ def check_run_cli_mimo(run_cli_path: Path) -> tuple[bool, str]:
     return False, "mimo config unclear"
 
 
+def read_git_head_version(repo: Path) -> str | None:
+    """Return the release version declared by HEAD, if its subject is vX.Y.Z."""
+    try:
+        subject = subprocess.check_output(
+            ["git", "-C", str(repo), "log", "-1", "--format=%s"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.search(r"\bv(\d+\.\d+\.\d+)\b", subject)
+    return match.group(1) if match else None
+
+
 def main() -> int:
     repo = Path(sys.argv[sys.argv.index("--repo") + 1]) if "--repo" in sys.argv else Path(__file__).parent.parent
 
@@ -107,7 +122,14 @@ def main() -> int:
     ver_set = {v["frontmatter"] for v in versions.values() if v["frontmatter"]}
     print("\n" + "=" * 60)
     if len(ver_set) == 1:
-        print(f"[OK] 三平台版本一致: {ver_set.pop()}")
+        unified_version = ver_set.pop()
+        print(f"[OK] 三平台版本一致: {unified_version}")
+        head_version = read_git_head_version(repo)
+        if head_version and head_version != unified_version:
+            print(f"[FAIL] HEAD 发布版本 ({head_version}) != 三平台 SKILL 版本 ({unified_version})")
+            all_ok = False
+        elif head_version:
+            print(f"[OK] HEAD 发布版本一致: {head_version}")
     else:
         print(f"[FAIL] 三平台版本不一致: {ver_set}")
         all_ok = False

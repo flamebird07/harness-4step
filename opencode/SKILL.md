@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.27
+version: 13.0.30
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.27
+# 四步法 Harness（opencode 适配层）v13.0.30
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -14,7 +14,7 @@ version: 13.0.27
 
 | 维度 | Hermes 适配层 | opencode 适配层（本文件） |
 |------|--------------|---------------------------|
-| 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | `scripts/run_step.ps1` 按 binding 路由 CLI；仅已验证的 step4/opencode-sub 以 99 移交 orchestrator |
+| 执行后端 | `run_cli.py` + `binding-lock.json`（每步绑外部 CLI） | `scripts/run_step.ps1` 按 binding 路由 CLI，或以 99 移交对应 OpenCode 原生 subagent |
 | 反绕过 | `plugin/four-step-enforcer` | subagent `permission: edit: deny`（系统级）+ **step4 快照强制（Save@step4前 → Assert@step4后，shared/core-logic.md §8b，CLI 由 run_step.ps1 自动、opencode-sub 由编排层 assert，未通过即 EXIT_CODE=4 + 自动回退）** |
 | 队列/超时/拆分 | Hermes 专属机制 | opencode 经 `opencode/scripts/run_step.ps1` 实现超时拆分：`MaxSplitDepth=3`/`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`，见 `shared/core-logic.md §6.1` |
 
@@ -142,8 +142,8 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 - 主 agent 不得自己分析根因、写方案、改代码
 - 传参只传原始问题/产物，禁止夹带倾向性结论
 - Step 3 完成后必须立即进入 Step 4，不得中途停下汇报当"完成"
-- 不得绕过 `run_step.ps1` 直接调用 `Task`、`harness-*` subagent 或 runner。`opencode-sub` 仅允许由 `bindings.step4.agent` 指定；任何其他 step 都必须在启动后端前 fail-closed，绝不返回 99。
-- 合法 `step4/opencode-sub` 的 `EXIT_CODE=99` 仅是 Step 0 校验后的 orchestrator 移交信号。orchestrator 只能据此调度绑定角色，返回后继续既定 evidence 写入和只读快照断言，不能重新解释或替换 binding。
+- 不得绕过 `run_step.ps1` 直接调用 `Task`、`harness-*` subagent 或 runner。`opencode-sub` 可由任一步的锁显式指定；脚本以 99 仅移交对应角色（step1→auditor、step2→planner、step3→implementer、step4→verifier），不得换用其他 CLI。
+- 合法 `opencode-sub` 的 `EXIT_CODE=99` 是 Step 0 校验后的 orchestrator 移交信号。`task` 不可用、权限拒绝或子代理失败时，保留错误并报告；不得将失败降级为 Hermes、其他 CLI 或主代理代做。Step 4 返回后仍须执行既定 evidence 写入和只读快照断言。
 - 每次 CLI、超时、普通失败、拆分壁垒和合法 99 移交都必须留下同一 schema 的 `evidence.json`；99 的状态为 `handoff_pending`，不是 evidence 豁免。
 - 写工具（patch/write_file 等）被 gate 拦截时，禁止换用 python heredoc / `python -c` / `node -e` / shell 重定向直写、直调 `run_cli.py` 或 runner/subagent 等任何等价路径完成同一写入（shared/core-logic.md §8 类别 F）；唯一合法出口是走编排层流程或向用户报告。
 
@@ -154,6 +154,10 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.30 (2026-08-24)
+
+- **原生子代理对称性**：`opencode-sub` 现可绑定至 Step 1–4，并经唯一入口发出 `STEP`/`SUBAGENT` 移交信号；不再把前三步强制转为外部 CLI，也不允许 CLI 故障自动跨运行时降级。
 
 ### v13.0.27 (2026-08-23)
 

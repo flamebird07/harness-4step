@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.27
+version: 13.0.30
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.27 — 四步唯一入口 + opencode-sub 仅 step4 + Step0 JSON fail-closed + evidence 统一)
+# Harness 4-Step Method (v13.0.30 — 四步唯一入口 + 双端禁止未授权 CLI 降级 + OpenCode 四步原生子代理)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.30 (2026-08-24)
+
+- **双端对称修复**：OpenCode 的 `opencode-sub` 从仅 Step 4 扩展为 Step 1–4 均可由锁显式绑定；`run_step.ps1` 以 `STEP` 与 `SUBAGENT` 信号移交对应原生角色。Hermes `run_cli()` 也强制要求显式授权才能覆盖绑定；两端原生能力失败均不得自动切 Hermes、OpenCode 或其他 CLI。版本检查同步核对 Git HEAD。
 
 ### v13.0.27 (2026-08-23)
 

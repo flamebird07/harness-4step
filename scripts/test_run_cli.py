@@ -239,27 +239,37 @@ class MimoPromptModeTests(unittest.TestCase):
             prompt=prompt, timeout_seconds=30)
         return result, captured
 
-    def test_mimo_prompt_mode_file(self):
+    def test_mimo_prompt_is_sent_via_stdin(self):
         long_prompt = "A long prompt that must not be truncated. " * 2000
         result, captured = self._run_capturing(long_prompt)
         self.assertTrue(result.success)
         cmd_strs = [str(c) for c in captured["cmd"]]
-        # Prompt is passed via -f <prompt.txt>, not as a positional arg.
-        self.assertIn("-f", cmd_strs)
-        self.assertTrue(any(c.endswith("prompt.txt") for c in cmd_strs))
+        # mimo -f is an attachment flag, not a message flag.  Prompts must use stdin.
+        self.assertNotIn("-f", cmd_strs)
+        self.assertFalse(any(c.endswith("prompt.txt") for c in cmd_strs))
         self.assertNotIn("A long prompt", cmd_strs)
-        # No stdin piping: input is None and stdin is DEVNULL.
-        self.assertIsNone(captured["input"])
-        self.assertIs(run_cli.subprocess.DEVNULL, captured["stdin"])
+        self.assertIn(long_prompt, captured["input"])
+        self.assertIsNone(captured["stdin"])
 
-    def test_mimo_use_stdin_false(self):
-        # Agent-level use_stdin=false must be declared and must prevent stdin piping.
-        self.assertFalse(run_cli.load_config().agent("mimo").get("use_stdin"))
+    def test_mimo_use_stdin_true(self):
+        self.assertTrue(run_cli.load_config().agent("mimo").get("use_stdin"))
         result, captured = self._run_capturing("Implement the fix.")
         self.assertTrue(result.success)
-        self.assertIsNone(captured["input"])
-        self.assertIs(run_cli.subprocess.DEVNULL, captured["stdin"])
+        self.assertIn("Implement the fix.", captured["input"])
+        self.assertIsNone(captured["stdin"])
 
+
+class OverrideAuthorizationTests(unittest.TestCase):
+    def test_library_override_requires_explicit_authorization(self):
+        """Direct callers must not turn a CLI failure into an unapproved fallback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_cli.run_cli(
+                step="step1", task_id="no-fallback", workspace=Path(tmp),
+                prompt="Review this.", agent_override="mimo",
+            )
+        self.assertFalse(result.success)
+        self.assertEqual(-1, result.exit_code)
+        self.assertIn("explicit user authorization", result.failure_reason)
 
 if __name__ == "__main__":
     unittest.main()

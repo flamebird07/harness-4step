@@ -337,11 +337,19 @@ class CliRunResult:
 
 def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             timeout_seconds: int | None = None,
-            agent_override: str | None = None) -> CliRunResult:
+            agent_override: str | None = None,
+            override_authorization: str | None = None) -> CliRunResult:
     config = load_config()
     cfg = config.step(step)
     # F-B-02：按次 agent 覆盖，仅本次调用生效，不写入持久化 binding-lock。
     if agent_override:
+        # 这是库函数的最终防线：CLI 入口会校验授权，但其他 Hermes 调用方也可能
+        # 直接 import run_cli。没有此检查时，调用方可在失败后静默换 CLI。
+        if not isinstance(override_authorization, str) or len(override_authorization.strip()) < 12:
+            return CliRunResult(step=step, agent=agent_override, command=[], started_at="",
+                finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
+                stderr_path="", evidence_path="", output_sha256="", success=False,
+                failure_reason="Agent override requires explicit user authorization (at least 12 characters); no fallback was attempted")
         if agent_override not in config.agents:
             return CliRunResult(step=step, agent=agent_override, command=[], started_at="",
                 finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
@@ -361,7 +369,7 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
         return CliRunResult(step=step, agent=agent, command=[agent], started_at="",
             finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
             stderr_path="", evidence_path="", output_sha256="", success=False,
-            failure_reason=f"CLI '{agent}' not found. Install or override in ~/.hermes/harness-config.yaml")
+            failure_reason=f"CLI '{agent}' not found. Install/configure that bound CLI or explicitly authorize a binding change; no fallback was attempted")
     cli_info = config.agent(agent)
     args_base = list(cli_info["args_base"])
     if step == "step3":
@@ -729,7 +737,8 @@ if __name__ == "__main__":
         _log_per_run_override(a.task_id, a.step, a.agent_override, a.authorization.strip())
     try:
         r = run_cli(step=a.step, task_id=a.task_id, workspace=ws, prompt=prompt,
-                    timeout_seconds=a.timeout, agent_override=run_agent_override)
+                    timeout_seconds=a.timeout, agent_override=run_agent_override,
+                    override_authorization=(a.authorization if run_agent_override else None))
     except BaseException as e:
         record_violation("run_cli_raised", str(e))
         # Fallback: never orphan a step as "started". If run_cli itself raises,
