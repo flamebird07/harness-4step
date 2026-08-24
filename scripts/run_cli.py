@@ -166,23 +166,41 @@ def _binding_lock_path() -> Path:
     return Path(os.environ.get("HERMES_BINDING_LOCK", Path.home() / ".hermes" / "binding-lock.json"))
 
 
+def _validate_binding_lock(data: dict[str, Any], source: Path) -> None:
+    """Validate the declarative binding contract without selecting any CLI.
+
+    Backends, their model families, and every step's binding belong to the lock.
+    The executor only validates this data; it never contains a preferred CLI per step.
+    """
+    if data.get("schema_version") != 2 or not data.get("locked"):
+        raise ValueError(f"Invalid binding lock: {source} — require schema_version=2 and locked=true")
+    bindings, backends = data.get("bindings"), data.get("backends")
+    if not isinstance(bindings, dict) or set(bindings) != set(DEFAULT_CONFIG):
+        raise ValueError("Binding lock must define exactly step1, step2, step3, step4")
+    if not isinstance(backends, dict) or not backends:
+        raise ValueError("Binding lock must declare non-empty backends with model families")
+    for name, backend in backends.items():
+        if not isinstance(name, str) or not isinstance(backend, dict) or not isinstance(backend.get("family"), str) or not backend["family"].strip():
+            raise ValueError(f"Invalid backend declaration '{name}': family must be a non-empty string")
+    for step, agent in bindings.items():
+        if not isinstance(agent, str) or agent not in backends:
+            raise ValueError(f"Invalid binding for {step}: backend must be declared in backends")
+    constraints = data.get("constraints")
+    if not isinstance(constraints, dict) or constraints.get("step4_must_differ_from_step3_family") is not True:
+        raise ValueError("Binding lock must set constraints.step4_must_differ_from_step3_family=true")
+    family3 = backends[bindings["step3"]]["family"].strip()
+    family4 = backends[bindings["step4"]]["family"].strip()
+    if family3 == family4:
+        raise ValueError(f"Binding violation: step3 and step4 both use model family '{family3}'")
+
+
 def load_binding_lock(path: Path | None = None) -> dict[str, Any]:
-    """Load the user-approved immutable step-to-agent bindings."""
+    """Load the user-approved declarative step-to-backend bindings."""
     source = path or _binding_lock_path()
     if not source.is_file():
         raise ValueError(f"Missing binding lock: {source}")
     data = json.loads(source.read_text(encoding="utf-8"))
-    if data.get("schema_version") != 1 or not data.get("locked") or not isinstance(data.get("bindings"), dict):
-        raise ValueError(f"Invalid binding lock: {source}")
-    if set(data["bindings"]) != set(DEFAULT_CONFIG):
-        raise ValueError("Binding lock must define exactly step1, step2, step3, step4")
-    # F-P8：绑定 value 类型校验，防异构锁混入。Hermes schema 为字符串；若 opencode 嵌套对象锁
-    # 被误复制到此路径，dict 值会使 config.agents[dict] 查找崩溃，fail-closed 拒绝。
-    for step, agent in data["bindings"].items():
-        if not isinstance(agent, str):
-            raise ValueError(
-                f"Invalid binding lock: {source} — '{step}' 绑定值必须为字符串（Hermes schema），"
-                f"实际为 {type(agent).__name__}（可能是 opencode 嵌套对象锁被误复制到此路径）")
+    _validate_binding_lock(data, source)
     return data
 
 
@@ -190,15 +208,16 @@ def authorize_binding_change(step: str, agent: str, authorization: str) -> dict[
     """Change one binding only with explicit, auditable user authorization text."""
     if step not in DEFAULT_CONFIG:
         raise ValueError("Unknown step")
-    if agent not in AGENT_CLI:
-        raise ValueError("Unknown agent")
     # F-P1：移除 v13.0.9#5 进行中任务改绑 gate（违反 P1「用户授权即可改」/ P3「执行中允许切换」）。
     # 改绑已强制 ≥12 字符授权文本并写入 authorization_log（见下 209-212），审计意图已满足；
     # 「防绕过质量」由 step4 只读 guard + evidence 校验承担，而非阻塞改绑。
     if len(authorization.strip()) < 12:
         raise ValueError("Provide the user's explicit authorization text (at least 12 characters)")
     path = _binding_lock_path(); data = load_binding_lock(path)
+    if agent not in data["backends"]:
+        raise ValueError(f"Unknown backend '{agent}': declare it in binding-lock.json backends first")
     data["bindings"][step] = agent
+    _validate_binding_lock(data, path)
     data.setdefault("authorization_log", []).append({
         "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "step": step,
         "agent": agent, "authorization": authorization.strip(),
@@ -350,6 +369,18 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
                 finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
                 stderr_path="", evidence_path="", output_sha256="", success=False,
                 failure_reason="Agent override requires explicit user authorization (at least 12 characters); no fallback was attempted")
+        try:
+            override_lock = load_binding_lock()
+            if agent_override not in override_lock["backends"]:
+                raise ValueError(f"backend '{agent_override}' is not declared in binding-lock.json")
+            proposed = deepcopy(override_lock)
+            proposed["bindings"][step] = agent_override
+            _validate_binding_lock(proposed, _binding_lock_path())
+        except ValueError as error:
+            return CliRunResult(step=step, agent=agent_override, command=[], started_at="",
+                finished_at="", duration_ms=0, exit_code=-1, stdout_path="",
+                stderr_path="", evidence_path="", output_sha256="", success=False,
+                failure_reason=f"Invalid authorized override: {error}")
         if agent_override not in config.agents:
             return CliRunResult(step=step, agent=agent_override, command=[], started_at="",
                 finished_at="", duration_ms=0, exit_code=-1, stdout_path="",

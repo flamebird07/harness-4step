@@ -7,6 +7,23 @@ from pathlib import Path
 import run_cli
 
 
+def binding_lock(bindings: dict[str, str] | None = None) -> dict:
+    """A declarative lock; tests must not rely on code-owned CLI families."""
+    return {
+        "schema_version": 2,
+        "locked": True,
+        "backends": {
+            "codex": {"family": "openai"},
+            "claude": {"family": "anthropic"},
+            "mimo": {"family": "xiaomi"},
+            "kimi": {"family": "moonshot"},
+        },
+        "bindings": bindings or {
+            "step1": "codex", "step2": "claude", "step3": "claude", "step4": "kimi",
+        },
+        "constraints": {"step4_must_differ_from_step3_family": True},
+    }
+
 class BindingLockTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -16,9 +33,7 @@ class BindingLockTests(unittest.TestCase):
         self.old_lock = os.environ.get("HERMES_BINDING_LOCK")
         os.environ["HERMES_HARNESS_CONFIG"] = str(self.config)
         os.environ["HERMES_BINDING_LOCK"] = str(self.lock)
-        self.lock.write_text(json.dumps({"schema_version": 1, "locked": True, "bindings": {
-            "step1": "codex", "step2": "claude", "step3": "claude", "step4": "kimi"
-        }}), encoding="utf-8")
+        self.lock.write_text(json.dumps(binding_lock()), encoding="utf-8")
 
     def tearDown(self):
         if self.old_config is None:
@@ -49,6 +64,25 @@ class BindingLockTests(unittest.TestCase):
         changed = run_cli.authorize_binding_change("step1", "kimi", "用户明确授权 Step 1 改用 Kimi CLI")
         self.assertEqual(changed["bindings"]["step1"], "kimi")
         self.assertEqual(len(changed["authorization_log"]), 1)
+
+    def test_same_family_step3_and_step4_is_rejected_from_configuration(self):
+        invalid = binding_lock({
+            "step1": "codex", "step2": "codex", "step3": "codex", "step4": "codex",
+        })
+        self.lock.write_text(json.dumps(invalid), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "both use model family 'openai'"):
+            run_cli.load_binding_lock(self.lock)
+
+    def test_custom_backend_is_accepted_when_declared_in_lock(self):
+        custom = binding_lock({
+            "step1": "local-review", "step2": "local-review", "step3": "local-build", "step4": "local-review",
+        })
+        custom["backends"] = {
+            "local-review": {"family": "review-model"},
+            "local-build": {"family": "build-model"},
+        }
+        self.lock.write_text(json.dumps(custom), encoding="utf-8")
+        self.assertEqual(run_cli.load_binding_lock(self.lock)["bindings"]["step4"], "local-review")
 
 
 class MissingLockTests(unittest.TestCase):
@@ -105,9 +139,7 @@ class Step4StaticReviewPrefixTests(unittest.TestCase):
         self.old_config = os.environ.get("HERMES_HARNESS_CONFIG")
         os.environ["HERMES_BINDING_LOCK"] = str(self.lock)
         os.environ["HERMES_HARNESS_CONFIG"] = str(self.config)
-        self.lock.write_text(json.dumps({"schema_version": 1, "locked": True, "bindings": {
-            "step1": "codex", "step2": "claude", "step3": "claude", "step4": "kimi"
-        }}), encoding="utf-8")
+        self.lock.write_text(json.dumps(binding_lock()), encoding="utf-8")
         self.config.write_text("{}", encoding="utf-8")
         self.addCleanup(self._restore_env)
 
@@ -214,9 +246,9 @@ class MimoPromptModeTests(unittest.TestCase):
             os.environ["USERPROFILE"] = self.old_profile
 
     def _bind_mimo_to_step3(self):
-        self.lock.write_text(json.dumps({"schema_version": 1, "locked": True, "bindings": {
-            "step1": "codex", "step2": "claude", "step3": "mimo", "step4": "kimi"
-        }}), encoding="utf-8")
+        self.lock.write_text(json.dumps(binding_lock({
+            "step1": "codex", "step2": "claude", "step3": "mimo", "step4": "kimi",
+        })), encoding="utf-8")
 
     def _run_capturing(self, prompt):
         self._bind_mimo_to_step3()
