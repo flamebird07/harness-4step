@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.31
+version: 13.0.32
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.31 — 配置化后端绑定与模型族约束 + 双端原生委派)
+# Harness 4-Step Method (v13.0.32 — 队列元数据保守修复 + 配置化后端绑定)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.32 (2026-08-24)
+
+- **队列修复工具**：新增 `scripts/repair_queue_metadata.py`，只修复可由现有证据确定的缺失 `task_id` 与“Step 3 成功但状态未回写”问题；不删除、取消、重跑或自行解除历史任务。
 
 ### v13.0.31 (2026-08-24)
 
