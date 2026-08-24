@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.34
+version: 13.0.35
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.34
+# 四步法 Harness（opencode 适配层）v13.0.35
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -28,7 +28,7 @@ version: 13.0.34
     "step1": { "agent": "claude", "model": null, "permission_mode": "default" },
     "step2": { "agent": "claude", "model": null, "permission_mode": "default" },
     "step3": { "agent": "claude", "model": null, "permission_mode": "bypassPermissions" },
-    "step4": { "agent": "opencode-sub", "model": null, "permission_mode": "default" }
+    "step4": { "agent": "codex", "model": null, "permission_mode": "default" }
   },
   "constraints": {
     "step4_must_differ_from_step3_family": true
@@ -43,13 +43,12 @@ version: 13.0.34
 
 | 步骤 | 角色 | 后端 | 权限 | 职责 |
 |------|------|------|------|------|
-| 1 | 审查 | `harness-auditor` subagent | edit: deny | 只找问题，不写方案（P 编号） |
-| 2 | 方案 | `harness-planner` subagent | edit: deny | 只写计划（F-<P编号> + before/after） |
-| 3 | 执行 | **mimo CLI**（`opencode/scripts/run_mimo_step3.ps1`，edit: allow） | 严格按方案改，不分析 |
-| 4 | 复审 | **`harness-verifier` subagent**（opencode-sub，`opencode/agents/harness-verifier.md`） | edit: deny（只读） | 独立验证（读实际代码 + 跑回归） |
+| 1 | 审查 | **Claude Code CLI** | default | 只找问题，不写方案（P 编号） |
+| 2 | 方案 | **Claude Code CLI** | default | 只写计划（F-<P编号> + before/after） |
+| 3 | 执行 | **Claude Code CLI** | bypassPermissions | 严格按方案改，不分析 |
+| 4 | 复审 | **Codex CLI** | read-only sandbox | 独立只读验证（读实际代码 + 必要的非写入式检查） |
 
-- step1-3 每次 Task 调用都是**全新独立上下文**，只传问题描述/上一步产物，**不传主 agent 的分析结论**。
-- step4 由主 agent 用 Task 调 `harness-verifier` subagent（binding=opencode-sub），独立上下文；mimo/codex CLI 为备用路径。
+- 每步均由 `run_step.ps1` 从本机锁读取当前绑定；本锁当前 Step 1–3=Claude、Step 4=Codex。若未来显式绑定为 `opencode-sub`，脚本以 `EXIT_CODE=99` 交由 OpenCode 的对应原生 `task` 子代理处理，不能自动换 CLI。
 
 ## codex CLI 调用规范（step4 备用路径，仅 mimo 认证失效且用户授权时使用）
 
@@ -154,6 +153,9 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.35 (2026-08-24)
+- 强制四步编排经 `run_step.ps1` 与 300 秒外层时限，保证 Claude `EXIT_CODE=-2` 可进入内建拆分；同步锁快照与角色表为当前 Step 1–3=Claude、Step 4=Codex。
 
 ### v13.0.34 (2026-08-24)
 - 与 Hermes / DSH 同步版本：Codex Step 4 在 Windows 上动态解析当前 Desktop 沙箱助手，保持只读复审约束。

@@ -93,6 +93,9 @@ powershell -Command "& \"$HOME\.dsh\skills\harness-4step\scripts\manage_binding.
 
 ## 版本历史
 
+### v13.0.35 (2026-08-24)
+- OpenCode 四步法强制统一入口和 300 秒外层超时，确保 Claude 超时可被拆分逻辑处理；修正当前绑定快照。
+
 ### v13.0.34 (2026-08-24)
 - Windows 上 Codex Step 4 动态选择当前 Desktop 沙箱助手，保留 `read-only` 沙箱并修复助手解析拒绝访问。
 
