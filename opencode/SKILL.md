@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.35
+version: 13.0.36
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.35
+# 四步法 Harness（opencode 适配层）v13.0.36
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -153,6 +153,11 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.36 (2026-08-24)
+
+- Claude CLI 改为直接启动 `claude.exe`，不再经 `Start-Job + stdin 管道`；发生超时时终止其完整子进程树，避免遗留进程导致后续步骤持续超时。
+- 预拆分同时检查 UTF-8 字符数（6,000）和行数，短行数的大提示词不再绕过拆分。
 
 ### v13.0.35 (2026-08-24)
 - 强制四步编排经 `run_step.ps1` 与 300 秒外层时限，保证 Claude `EXIT_CODE=-2` 可进入内建拆分；同步锁快照与角色表为当前 Step 1–3=Claude、Step 4=Codex。

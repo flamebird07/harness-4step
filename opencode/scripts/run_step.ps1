@@ -249,21 +249,26 @@ function Invoke-TaskWithSplit {
 # 主循环：尝试 → 成功/非超时退出 → 超时则按 §4b 拆一次
 $curPrompt = $PromptFile
 $curOut = $OutDir
-# Step 0：主动预拆分（P-14）—— prompt 行数 > 60 时按段落边界预拆为 ≤40 行的子任务，
-# 避免 claude/mimo 长 prompt 直接超时（BLOCKED_SPLIT_LIMIT 只在超时后才被动触发）。
+# Step 0：主动预拆分（P-14）—— prompt 超过 60 行或 6,000 UTF-8 字符时按段落边界预拆，
+# 避免一条超长行绕过行数阈值而让 Claude 在 Windows 上长时间占用 stdin。
 $prechunkLines = 40
 $prechunkTrigger = 60
 $txt0 = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
 $lines0 = $txt0 -split "`r?`n"
+$promptChars = [System.Text.Encoding]::UTF8.GetByteCount($txt0)
 $preDir = Join-Path $OutDir "prechunks"
 $splitParent = $null
-if ($lines0.Count -gt $prechunkTrigger) {
+if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
     New-Item -ItemType Directory -Path $preDir -Force | Out-Null
     $chunks = New-Object System.Collections.ArrayList
     $cur = New-Object System.Collections.ArrayList
     foreach ($l in $lines0) {
         $cur.Add($l) | Out-Null
-        $isParagraphBreak = ($l.Trim() -eq "" -or $cur.Count -ge $prechunkLines)
+        # A single pasted paragraph may be enormous.  It needs a character
+        # bound too; keep it as a standalone work package rather than sending
+        # the entire original prompt to the CLI.
+        $chunkChars = [System.Text.Encoding]::UTF8.GetByteCount(($cur -join "`n"))
+        $isParagraphBreak = ($l.Trim() -eq "" -or $cur.Count -ge $prechunkLines -or $chunkChars -ge 5000)
         if ($isParagraphBreak) {
             if ($cur.Count -ge 4) {
                 [void]$chunks.Add(($cur -join "`n"))

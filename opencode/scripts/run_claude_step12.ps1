@@ -21,6 +21,10 @@ if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path 
 
 $claude = Get-Command claude -ErrorAction SilentlyContinue
 if (-not $claude) { throw "claude CLI not found in PATH" }
+$claudeExe = Join-Path (Split-Path -Parent $claude.Source) "node_modules\@anthropic-ai\claude-code\bin\claude.exe"
+if (-not (Test-Path -LiteralPath $claudeExe)) {
+    throw "Claude executable not found at $claudeExe (resolved from $($claude.Source))"
+}
 
 $prompt = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
 $prompt = $prompt.Trim()
@@ -46,26 +50,45 @@ if ($Permissions -ne "default") {
 }
 
 $started = Get-Date
-$job = Start-Job -ScriptBlock {
-    param($Prompt, $Exe, $Cmd)
-    # 修正中文 Windows（GBK 控制台）下管道/标准输出被误解码为乱码：
-    # 送入 stdin 用 $OutputEncoding，读回 stdout 用 [Console]::OutputEncoding，
-    # 两者都必须显式设 UTF-8（Start-Job 子进程不继承父进程的 Console 编码）。
-    $OutputEncoding = [System.Text.Encoding]::UTF8
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    $out = $Prompt | & $Exe @Cmd 2>&1
-    [pscustomobject]@{ Exit = $LASTEXITCODE; Out = $out }
-} -ArgumentList $prompt, $claude.Source, $cmd
-if (Wait-Job $job -Timeout $TimeoutSeconds) {
-    $result = Receive-Job $job
-    $exitCode = if ($null -ne $result.Exit) { [int]$result.Exit } else { -1 }
-    $output = @($result.Out)
+# Do not put claude.exe behind Start-Job + a PowerShell pipeline.  On Windows
+# that combination can leave stdin or a child node process alive after the job
+# timeout, turning the next OpenCode step into a phantom >240s timeout.
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $claudeExe
+$psi.UseShellExecute = $false
+$psi.RedirectStandardInput = $true
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+# Windows PowerShell 5.1 exposes StandardInputEncoding without a setter; the
+# redirected StreamWriter already defaults to UTF-8, so do not assign it.
+$psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+$psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+$psi.WorkingDirectory = $WorkspaceDir
+$psi.Arguments = '-p --output-format text --add-dir "' + $WorkspaceDir.Replace('"', '\"') + '"'
+if ($Permissions -ne "default") { $psi.Arguments += ' --permission-mode ' + $Permissions }
+$proc = New-Object System.Diagnostics.Process
+$proc.StartInfo = $psi
+if (-not $proc.Start()) { throw "Failed to start Claude executable: $claudeExe" }
+$stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+$stderrTask = $proc.StandardError.ReadToEndAsync()
+$proc.StandardInput.Write($prompt)
+$proc.StandardInput.Close()
+if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
+    $proc.WaitForExit()
+    $exitCode = $proc.ExitCode
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    $output = @($stdout, $stderr | Where-Object { $_ })
 } else {
-    Stop-Job $job
+    # /T terminates descendants created by the CLI as well as its launcher.
+    & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
+    $proc.WaitForExit()
     $exitCode = -2
-    $output = @("TIMEOUT after ${TimeoutSeconds}s")
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    $output = @("TIMEOUT after ${TimeoutSeconds}s (Claude process tree terminated)", $stdout, $stderr | Where-Object { $_ })
 }
-Remove-Job $job -Force
+$proc.Dispose()
 $elapsed = ((Get-Date) - $started).TotalSeconds
 
 $output | Out-File -LiteralPath $rawFile -Encoding utf8

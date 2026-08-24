@@ -93,6 +93,10 @@ powershell -Command "& \"$HOME\.dsh\skills\harness-4step\scripts\manage_binding.
 
 ## 版本历史
 
+### v13.0.36 (2026-08-24)
+
+- OpenCode Claude runner avoids the Windows PowerShell Job/stdin-pipe hang, kills the complete CLI tree on timeout, and pre-chunks long prompts by UTF-8 size as well as line count.
+
 ### v13.0.35 (2026-08-24)
 - OpenCode 四步法强制统一入口和 300 秒外层超时，确保 Claude 超时可被拆分逻辑处理；修正当前绑定快照。
 

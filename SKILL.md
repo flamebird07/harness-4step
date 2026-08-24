@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.35
+version: 13.0.36
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.35 — OpenCode 超时拆分入口加固)
+# Harness 4-Step Method (v13.0.36 — OpenCode Claude Windows 超时根治)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,11 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.36 (2026-08-24)
+
+- OpenCode 的 Claude runner 直接启动 `claude.exe` 并异步读写标准流，移除 Windows 上会遗留 stdin/子进程的 `Start-Job + 管道` 组合；超时会终止完整进程树。
+- 预拆分同时按 UTF-8 字符数（6,000）触发，避免“少于 60 行但单行超长”的提示词绕过拆分而卡住 Claude CLI。
 
 ### v13.0.35 (2026-08-24)
 - **OpenCode 超时闭环**：实际工作区编排器强制经 `run_step.ps1` 启动四步法、外层至少 300 秒并记录完整日志；保留 `EXIT_CODE=-2` 给脚本的预拆分/递归拆分逻辑，禁止外层 240 秒截断后跳过拆分。
