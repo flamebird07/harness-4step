@@ -1,13 +1,13 @@
 # 4步法强制执行系统 (Harness 4-Step Method)
 
-> **v13.0.21** — 视觉审查封装进四步法（§11：某步需视觉判断且后端无视觉时，经 mimo 视觉模型看图，DSH/opencode 支持、Hermes 自带视觉不触发）；Step 3 验证门（§2b/§2c）+ step4 只读快照强制（P-08/P-09）；主 agent 自动读 binding-lock（解决"必须人工强化"问题）；每步 CLI 绑定由 binding-lock.json 决定（Hermes / opencode / DSH 各自持久化）。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 `shared/`。
+> **v13.0.37** — OpenCode Claude runner 通过参数传递 prompt，避免 Windows stdin 管道挂起；默认超时为 300 秒，并只清理本次 Claude 进程树。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 `shared/`。
 
 ## 系统组成
 
 | 组件 | 作用 |
 |------|------|
 | shared/ | **唯一逻辑源**：core-logic.md（四步法逻辑 + 视觉审查 §11）+ binding-recommendation.md（推荐表） |
-| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.21） |
+| SKILL.md | Hermes 适配层：定义4步法规则和流程（v13.0.37） |
 | opencode/ | opencode 适配层：SKILL.md + 4 个 harness-* subagents + README + 共享视觉 runner |
 | dsh/ | DeepSeek Harness 适配层：SKILL.md + 6 个 subagent 提示词模板 + scripts |
 | plugin/ | harness-4step 技术强制执行插件 |
@@ -92,6 +92,10 @@ powershell -Command "& \"$HOME\.dsh\skills\harness-4step\scripts\manage_binding.
 完整安装与使用见 `dsh/README.md`。
 
 ## 版本历史
+
+### v13.0.37 (2026-08-24)
+
+- OpenCode Claude runner 使用 `ProcessStartInfo.ArgumentList` 传递 prompt，避免 Windows stdin 管道挂起；默认超时为 300 秒，并只终止本次 Claude 进程树。
 
 ### v13.0.36 (2026-08-24)
 

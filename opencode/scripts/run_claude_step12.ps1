@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutDir,
     [string]$Step = "step1",
-    [int]$TimeoutSeconds = 180,
+    [int]$TimeoutSeconds = 300,
     [ValidateSet("default", "acceptEdits", "bypassPermissions")]
     [string]$Permissions = "default"
 )
@@ -30,24 +30,10 @@ $prompt = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
 $prompt = $prompt.Trim()
 if (-not $prompt) { throw "Prompt file is empty" }
 
-# Strip any ANTHROPIC_* overrides inherited from the shell environment.
-# claude-code reads its own credentials/base-url from ~/.claude/settings.json;
-# leftover shell vars (e.g. deepseek proxy) point at a dead endpoint and hang.
-foreach ($name in @("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
-                    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                    "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
-                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME")) {
-    Remove-Item ("Env:" + $name) -ErrorAction SilentlyContinue
-}
+# 保留当前会话的 ANTHROPIC_* 环境变量；本机凭据代理可能依赖这些变量。
 
 $rawFile = Join-Path $OutDir "claude_raw.txt"
 $msgFile = Join-Path $OutDir "$Step-output.md"
-
-$cmd = @("-p", "--output-format", "text", "--add-dir", $WorkspaceDir)   # prompt 经管道喂 stdin，避免 8191 字符命令行截断；--add-dir 放行 Read 工具读工作目录
-if ($Permissions -ne "default") {
-    $cmd += "--permission-mode"; $cmd += $Permissions
-}
 
 $started = Get-Date
 # Do not put claude.exe behind Start-Job + a PowerShell pipeline.  On Windows
@@ -56,7 +42,6 @@ $started = Get-Date
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $claudeExe
 $psi.UseShellExecute = $false
-$psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 # Windows PowerShell 5.1 exposes StandardInputEncoding without a setter; the
@@ -64,15 +49,22 @@ $psi.RedirectStandardError = $true
 $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
 $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
 $psi.WorkingDirectory = $WorkspaceDir
-$psi.Arguments = '-p --output-format text --add-dir "' + $WorkspaceDir.Replace('"', '\"') + '"'
-if ($Permissions -ne "default") { $psi.Arguments += ' --permission-mode ' + $Permissions }
+$psi.ArgumentList.Add("-p")
+$psi.ArgumentList.Add($prompt)
+$psi.ArgumentList.Add("--output-format")
+$psi.ArgumentList.Add("text")
+$psi.ArgumentList.Add("--add-dir")
+$psi.ArgumentList.Add($WorkspaceDir)
+if ($Permissions -ne "default") {
+    $psi.ArgumentList.Add("--permission-mode")
+    $psi.ArgumentList.Add($Permissions)
+}
 $proc = New-Object System.Diagnostics.Process
 $proc.StartInfo = $psi
 if (-not $proc.Start()) { throw "Failed to start Claude executable: $claudeExe" }
 $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
 $stderrTask = $proc.StandardError.ReadToEndAsync()
-$proc.StandardInput.Write($prompt)
-$proc.StandardInput.Close()
+$warnings = @()
 if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
     $proc.WaitForExit()
     $exitCode = $proc.ExitCode
@@ -87,6 +79,7 @@ if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
     $output = @("TIMEOUT after ${TimeoutSeconds}s (Claude process tree terminated)", $stdout, $stderr | Where-Object { $_ })
+    $warnings += "timeout at ${TimeoutSeconds}s"
 }
 $proc.Dispose()
 $elapsed = ((Get-Date) - $started).TotalSeconds
@@ -122,7 +115,7 @@ $evidence = [ordered]@{
     output_files     = @{ raw = $rawFile; output = $msgFile; evidence = (Join-Path $OutDir "evidence.json") }
     split_parent     = $null
     timestamp        = $started.ToString("o")
-    warnings         = @()
+    warnings         = $warnings
     binding_snapshot = @{ agent = "claude"; permission_mode = $Permissions; model = $null }
 }
 $evFile = Join-Path $OutDir "evidence.json"
