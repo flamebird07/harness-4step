@@ -1,6 +1,13 @@
 {
-    "schema_version":  1,
+    "schema_version":  2,
     "locked":  true,
+    "backends": {
+                     "claude": { "family": "anthropic" },
+                     "codex": { "family": "openai" },
+                     "mimo": { "family": "xiaomi" },
+                     "kimi": { "family": "moonshot" },
+                     "opencode-sub": { "family": "opencode-main" }
+                 },
     "bindings":  {
                      "step1":  {
                                    "agent":  "claude",

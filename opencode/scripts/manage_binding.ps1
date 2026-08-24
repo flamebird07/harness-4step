@@ -38,10 +38,7 @@ $ErrorActionPreference = "Stop"
 
 $KNOWN_STEPS = @("step1", "step2", "step3", "step4")
 # 模型族分组：step3 与 step4 必须不同族（shared/core-logic.md §4:34）
-$AGENT_FAMILY = @{
-    "claude" = "claude"; "codex" = "openai"; "mimo" = "mimo";
-    "kimi" = "moonshot"; "opencode-sub" = "opencode-main"   # 统一受支持集合（去 gemini，run_step.ps1 分派器不支持）
-}
+$SUPPORTED_AGENTS = @("claude", "codex", "mimo", "kimi", "opencode-sub")
 
 function Get-BoundAgent($Lock, [string]$Step) {
     $b = $Lock.bindings.$Step
@@ -76,11 +73,18 @@ function Load-Lock([string]$Path) {
     }
     try { $data = Get-Content -LiteralPath $Path -Encoding UTF8 -Raw | ConvertFrom-Json }
     catch { Fail-Cli "Invalid JSON in binding lock: $Path ($_)" }
-    if ($data.schema_version -ne 1) { Fail-Cli "Invalid binding lock: schema_version 必须为 1（$Path）" }
+    if ($data.schema_version -ne 2) { Fail-Cli "Invalid binding lock: schema_version 必须为 2（$Path）" }
     if (-not $data.locked) { Fail-Cli "Invalid binding lock: locked 必须为 true（$Path）" }
+    if ($null -eq $data.backends -or @($data.backends.PSObject.Properties).Count -eq 0) { Fail-Cli "Binding lock 必须声明非空 backends（$Path）" }
     $keys = @($data.bindings.PSObject.Properties.Name)
     if (($keys | Sort-Object) -join "," -ne (($KNOWN_STEPS | Sort-Object) -join ",")) {
         Fail-Cli "Binding lock 必须恰好定义 step1, step2, step3, step4（$Path）"
+    }
+    foreach ($step in $KNOWN_STEPS) {
+        $agent = Get-BoundAgent $data $step
+        if (-not $agent -or $null -eq $data.backends.$agent) { Fail-Cli "绑定 $step='$agent' 未在 backends 中声明（$Path）" }
+        $family = $data.backends.$agent.family
+        if (-not ($family -is [string]) -or [string]::IsNullOrWhiteSpace($family)) { Fail-Cli "backend '$agent' 缺少非空 family（$Path）" }
     }
     return $data
 }
@@ -95,19 +99,19 @@ function Load-Config([string]$Path) {
     }
     return $cfg
 }
-function Test-Step4FamilyDifferent([string]$Step3Agent, [string]$Step4Agent) {
-    $f3 = $AGENT_FAMILY[$Step3Agent]; $f4 = $AGENT_FAMILY[$Step4Agent]
-    if (-not $f3) { Fail-Cli "未知 step3 agent '$Step3Agent'（已知：$($AGENT_FAMILY.Keys -join ', ')）" }
-    if (-not $f4) { Fail-Cli "未知 step4 agent '$Step4Agent'（已知：$($AGENT_FAMILY.Keys -join ', ')）" }
+function Test-Step4FamilyDifferent($Lock) {
+    if ($null -eq $Lock.constraints -or $Lock.constraints.step4_must_differ_from_step3_family -ne $true) { Fail-Cli "Binding lock 必须设置 constraints.step4_must_differ_from_step3_family=true" }
+    $step3Agent = Get-BoundAgent $Lock "step3"; $step4Agent = Get-BoundAgent $Lock "step4"
+    $f3 = $Lock.backends.$step3Agent.family; $f4 = $Lock.backends.$step4Agent.family
     if ($f3 -eq $f4) {
         Fail-Cli "绑定违规：step3='$Step3Agent' 与 step4='$Step4Agent' 同模型族 '$f3'。Step 4 必须与 Step 3 不同模型族（shared/core-logic.md §4）。"
     }
 }
-function Test-Step1Step2Supported($Lock) {
-    foreach ($s in @("step1", "step2")) {
+function Test-BindingsSupported($Lock) {
+    foreach ($s in $KNOWN_STEPS) {
         $a = Get-BoundAgent $Lock $s
-        if (-not $AGENT_FAMILY.ContainsKey($a)) {
-            Fail-Cli "绑定违规：$s='$a' 不受支持（受支持 agent：$($AGENT_FAMILY.Keys -join ', ')）"
+        if ($SUPPORTED_AGENTS -notcontains $a) {
+            Fail-Cli "绑定违规：$s='$a' 不受此运行器支持（受支持 agent：$($SUPPORTED_AGENTS -join ', ')）"
         }
     }
 }
@@ -115,8 +119,8 @@ function Test-Step1Step2Supported($Lock) {
 if ($ShowBindings -or $Check) {
     $lock = Load-Lock (Resolve-LockPath)
     $cfg = Load-Config (Resolve-ConfigPath)
-    Test-Step1Step2Supported $lock
-    Test-Step4FamilyDifferent (Get-BoundAgent $lock step3) (Get-BoundAgent $lock step4)
+    Test-BindingsSupported $lock
+    Test-Step4FamilyDifferent $lock
     $defaultT = 180
     if ($null -ne $cfg -and $null -ne $cfg.defaults.timeout_seconds) { $defaultT = $cfg.defaults.timeout_seconds }
     foreach ($step in $KNOWN_STEPS) {
@@ -191,7 +195,7 @@ if ($AuthorizeSteps) {
     foreach ($prop in $map.PSObject.Properties) {
         $s = $prop.Name; $ag = $prop.Value
         if ($KNOWN_STEPS -notcontains $s) { Fail-Cli "未知步骤：$s" }
-        if (-not $AGENT_FAMILY.ContainsKey($ag)) { Fail-Cli "未知 agent：$ag" }
+        if ($SUPPORTED_AGENTS -notcontains $ag) { Fail-Cli "未知 agent：$ag" }
         $pairs += [pscustomobject]@{ Step = $s; Agent = $ag }
     }
     # F-P11Rev2：显式拒绝零项映射——{} 通过 $null 检查但 $pairs 为空，
@@ -208,8 +212,8 @@ if ($AuthorizeSteps) {
     }
     # 单事务：全部 Set-BoundAgent 后再统一校验约束 + 原子写（不满足约束则整体不落盘）
     foreach ($p in $pairs) { Set-BoundAgent $lock $p.Step $p.Agent }
-    Test-Step1Step2Supported $lock
-    Test-Step4FamilyDifferent (Get-BoundAgent $lock step3) (Get-BoundAgent $lock step4)
+    Test-BindingsSupported $lock
+    Test-Step4FamilyDifferent $lock
     $entry = [pscustomobject]@{
         at = (Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz")
         step = "all"
@@ -228,7 +232,7 @@ if ($AuthorizeSteps) {
 }
 if ($AuthorizeStep) {
     if ($KNOWN_STEPS -notcontains $AuthorizeStep) { Fail-Cli "未知步骤：$AuthorizeStep" }
-    if (-not $AGENT_FAMILY.ContainsKey($Agent)) { Fail-Cli "未知 agent：$Agent" }
+    if ($SUPPORTED_AGENTS -notcontains $Agent) { Fail-Cli "未知 agent：$Agent" }
     if (-not $Authorization -or $Authorization.Trim().Length -lt 12) {
         Fail-Cli "必须提供用户显式授权原文（至少 12 字符）"
     }
@@ -243,8 +247,8 @@ if ($AuthorizeStep) {
     }
     Set-BoundAgent $lock $AuthorizeStep $Agent
     # 写入前先校验模型族硬约束，不满足则拒绝写入（fail-closed）
-    Test-Step1Step2Supported $lock
-    Test-Step4FamilyDifferent (Get-BoundAgent $lock step3) (Get-BoundAgent $lock step4)
+    Test-BindingsSupported $lock
+    Test-Step4FamilyDifferent $lock
     $entry = [pscustomobject]@{
         at = (Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz")
         step = $AuthorizeStep

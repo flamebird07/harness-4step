@@ -39,7 +39,8 @@ STEP_PROMPT_PREFIXES = {
     ),
     "step4": (
         "IMPORTANT: This is a static read-only review. "
-        "Do NOT execute tests or commands. "
+        "You may read the listed files and run strictly non-mutating inspection commands. "
+        "Do NOT execute tests, builds, installs, or any command that writes files. "
         "Do NOT treat missing tools as failure.\n\n"
     ),
     "mimo": ("【严格约束】不准虚构任何内容. 只能基于实际代码/文件内容输出. 如果不确定, 输出'我不确定'. 不准编造命令、参数、路径、降级路径. "
@@ -408,6 +409,17 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             args_base = [x for x in args_base if x != arg]
         for arg in cli_info.get('step3_extra_args', []):
             args_base.append(arg)
+    if step == "step4" and agent == "codex":
+        # The reviewer's prompt is not a security boundary.  Enforce Codex's
+        # read-only sandbox in the actual command, even if a user config
+        # supplied a more permissive base command.
+        try:
+            sandbox_index = args_base.index("--sandbox")
+            if sandbox_index + 1 >= len(args_base):
+                raise ValueError("missing sandbox value")
+            args_base[sandbox_index + 1] = "read-only"
+        except ValueError:
+            args_base.extend(["--sandbox", "read-only"])
     d = Path.home() / ".hermes" / "harness-workspace" / task_id / step
     d.mkdir(parents=True, exist_ok=True)
     stdout_p, stderr_p, ev_p = d/"stdout.jsonl", d/"stderr.txt", d/"evidence.json"

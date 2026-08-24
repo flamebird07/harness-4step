@@ -27,11 +27,15 @@ try {
     throw "binding-lock.json invalid JSON — fail-closed: $($_.Exception.Message)"
 }
 if (-not $lock.locked) { throw "binding NOT locked — fail-closed" }
+if ($lock.schema_version -ne 2) { throw "binding-lock.json schema_version must be 2 — fail-closed" }
+if ($null -eq $lock.backends) { throw "binding-lock.json backends missing — fail-closed" }
 $b = $lock.bindings.$Step; if (-not $b) { throw "no binding for $Step in binding-lock.json" }
-if ($Step -eq "step4" -and $lock.constraints.step4_must_differ_from_step3_family) {
-    if ($lock.bindings.step3.agent -eq $b.agent) {
-        throw "step4 agent ($($b.agent)) must differ from step3 agent ($($lock.bindings.step3.agent)) family"
-    }
+if ($null -eq $lock.backends.$($b.agent)) { throw "backend '$($b.agent)' is not declared — fail-closed" }
+if ($null -eq $lock.constraints -or $lock.constraints.step4_must_differ_from_step3_family -ne $true) { throw "step4 family constraint missing — fail-closed" }
+$step3Agent = $lock.bindings.step3.agent
+if ($null -eq $lock.backends.$step3Agent) { throw "step3 backend '$step3Agent' is not declared — fail-closed" }
+if ($Step -eq "step4" -and $lock.backends.$step3Agent.family -eq $lock.backends.$($b.agent).family) {
+    throw "step4 backend family must differ from step3 backend family"
 }
 
 # Step4 只读技术强制（core-logic §8/§8b + F-08）：CLI 路径由本脚本 Save/Assert 快照自动回退并标违规；opencode-sub 路径快照由本脚本 Save、由主编排层 Assert（见 harness-orchestrator.md）

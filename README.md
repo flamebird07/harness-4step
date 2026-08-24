@@ -93,6 +93,9 @@ powershell -Command "& \"$HOME\.dsh\skills\harness-4step\scripts\manage_binding.
 
 ## 版本历史
 
+### v13.0.33 (2026-08-24)
+- OpenCode 绑定锁升级 schema v2，模型族由配置声明；Hermes Codex Step 4 强制 `read-only` 沙箱。
+
 - v13.0.21 (2026-08-15): 视觉审查封装进四步法（shared/core-logic.md §11）——某步需视觉判断且后端无视觉时经共享 runner `opencode/scripts/run_vision_review.ps1`（mimo CLI + 视觉模型 `xiaomi/mimo-v2.5`）看图，视觉结论作为该步输入佐证；DSH/opencode 支持、Hermes 自带视觉不触发。版本号 13.0.20 → 13.0.21。
 - v13.0.20 (2026-08-14): Step 3 验证门（shared/core-logic.md §2b/§2c）——Step 3 产物必须含验证状态（passed/blocked/not-run），验证被拦截不得自评通过；step4 只读快照强制（opencode/scripts/step4_readonly_guard.ps1，P-08/P-09）；违规处理新增类别 D（验证被拦截）/E（复审假通过），强制记录。DSH 适配层同步验证门。版本号 13.0.19 → 13.0.20。
 - v13.0.19 (2026-08-14): 新增 DeepSeek Harness (DSH) 适配层（`dsh/` 目录）；版本号 13.0.18 → 13.0.19

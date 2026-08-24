@@ -170,15 +170,21 @@ class Step4StaticReviewPrefixTests(unittest.TestCase):
             prompt=prompt, timeout_seconds=30)
 
     def test_step4_prefixes_prompt_with_static_readonly_instruction(self):
+        self.lock.write_text(json.dumps(binding_lock({
+            "step1": "claude", "step2": "claude", "step3": "claude", "step4": "codex",
+        })), encoding="utf-8")
         result = self._run("step4", "Review the diff.")
         prompt_path = Path(self.temp.name) / ".hermes" / "harness-workspace" / "t1" / "step4" / "prompt.txt"
         prompt = prompt_path.read_text(encoding="utf-8")
         self.assertTrue(prompt.startswith(
             "IMPORTANT: This is a static read-only review. "
-            "Do NOT execute tests or commands. "
+            "You may read the listed files and run strictly non-mutating inspection commands. "
+            "Do NOT execute tests, builds, installs, or any command that writes files. "
             "Do NOT treat missing tools as failure."))
         self.assertTrue(prompt.endswith("\n\nReview the diff."))
         self.assertTrue(result.success)
+        sandbox_index = result.command.index("--sandbox")
+        self.assertEqual(result.command[sandbox_index + 1], "read-only")
 
     def test_non_step4_is_not_prefixed(self):
         result = self._run("step1", "Hello.")

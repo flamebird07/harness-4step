@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.32
+version: 13.0.33
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.32 — 队列元数据保守修复 + 配置化后端绑定)
+# Harness 4-Step Method (v13.0.33 — 双端声明式绑定 + Step 4 只读沙箱强制)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.33 (2026-08-24)
+- **双端绑定对称**：OpenCode 绑定锁与管理器升级为 schema v2；后端可用集合、模型族、每步绑定均从 `binding-lock.json` 的 `backends` / `bindings` / `constraints` 读取，脚本不再拥有模型族映射。
+- **复审安全修复**：Hermes `run_cli.py` 对 Codex Step 4 强制 `--sandbox read-only`，忽略任何更宽松配置；允许仅非写入式文件检查，禁止测试、构建、安装及所有写操作。
 
 ### v13.0.32 (2026-08-24)
 
