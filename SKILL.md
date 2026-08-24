@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.33
+version: 13.0.34
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.33 — 双端声明式绑定 + Step 4 只读沙箱强制)
+# Harness 4-Step Method (v13.0.34 — Codex Step 4 Windows 沙箱助手兼容)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,9 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.34 (2026-08-24)
+- **Windows Step 4 兼容**：Codex 只读复审子进程动态发现当前 Codex Desktop 安装目录中的 `codex-windows-sandbox-setup.exe` 并仅为该子进程优先设置 PATH，避免 WindowsApps 助手解析导致的拒绝访问；不降低 `read-only` 沙箱。
 
 ### v13.0.33 (2026-08-24)
 - **双端绑定对称**：OpenCode 绑定锁与管理器升级为 schema v2；后端可用集合、模型族、每步绑定均从 `binding-lock.json` 的 `backends` / `bindings` / `constraints` 读取，脚本不再拥有模型族映射。

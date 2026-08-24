@@ -93,6 +93,9 @@ powershell -Command "& \"$HOME\.dsh\skills\harness-4step\scripts\manage_binding.
 
 ## 版本历史
 
+### v13.0.34 (2026-08-24)
+- Windows 上 Codex Step 4 动态选择当前 Desktop 沙箱助手，保留 `read-only` 沙箱并修复助手解析拒绝访问。
+
 ### v13.0.33 (2026-08-24)
 - OpenCode 绑定锁升级 schema v2，模型族由配置声明；Hermes Codex Step 4 强制 `read-only` 沙箱。
 

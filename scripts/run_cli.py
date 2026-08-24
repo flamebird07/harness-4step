@@ -342,6 +342,22 @@ def _resolve_executable(agent: str) -> str | None:
     return None
 
 
+def _prefer_current_windows_sandbox_helper(env: dict[str, str]) -> None:
+    """Use the current app-installed helper for this child process only."""
+    if sys.platform != "win32":
+        return
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return
+    helper_root = Path(local_app_data) / "OpenAI" / "Codex" / "bin"
+    candidates = list(helper_root.glob("*/codex-windows-sandbox-setup.exe"))
+    if not candidates:
+        return
+    helper_dir = max(candidates, key=lambda p: p.stat().st_mtime).parent
+    existing = env.get("PATH", "")
+    env["PATH"] = str(helper_dir) + (os.pathsep + existing if existing else "")
+
+
 def get_step_config(step: str) -> dict[str, Any]:
     """Compatibility wrapper for callers importing the old helper."""
     return load_config().step(step)
@@ -445,6 +461,8 @@ def run_cli(*, step: str, task_id: str, workspace: Path, prompt: str,
             # Isolated CODEX_HOME per shared/binding-recommendation.md
             # (the default ~/.codex may be stale/unusable).
             env["CODEX_HOME"] = str(Path.home() / ".ccsc" / "codex-mimo")
+        if agent == "codex" and step == "step4":
+            _prefer_current_windows_sandbox_helper(env)
         r = subprocess.run(cmd, cwd=str(workspace), env=env,
             input=prompt if use_stdin else None,
             stdin=None if use_stdin else subprocess.DEVNULL,
