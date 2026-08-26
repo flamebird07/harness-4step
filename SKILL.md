@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.39
+version: 13.0.40
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.39 — p10-infra-failover code-level)
+# Harness 4-Step Method (v13.0.40 — p20-prechunk-fix backlog)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.40 (2026-08-25)
+
+- **p20-prechunk-fix（backlog，三平台同步）**：opencode `run_step.ps1` prechunk 触发条件去掉 opencode-sub 例外——所有绑定统一 prechunk（F-P20），prechunk 循环聚合全部 99 handoff 为单条 `BINDING=opencode-sub ... CHUNKS=<n> EXIT_CODE=99`，不再丢弃 chunks 2..N；`run_claude_step12.ps1` 新增 arg summary/prompt UTF-8 字节数/checked stdin write/完整 stderr 留存 + 检测 `API Error: Failed to parse JSON` 发 `INFRA_FAILURE:other`/`INFRA_FAILURE_DETAIL:claude_json_parse`/exit 13（F-P18）；preflight helper 拒绝 bash 内联 PS 携带自动变量（F-P19）；`run_mimo_step3.ps1` 检测 `Text repetition detected` → `INFRA_FAILURE:text_repetition` + exit 13（F-P16）；新增 `check-bom.ps1` + Step 0 fail-closed BOM gate（F-P17）。版本 13.0.39 → 13.0.40。
 
 ### v13.0.39 (2026-08-25)
 
