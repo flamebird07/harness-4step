@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.36
+version: 13.0.40
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.36
+# 四步法 Harness（opencode 适配层）v13.0.40
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -54,10 +54,10 @@ version: 13.0.36
 
 ```powershell
 # 把复审 prompt 写入 .harness/<task>/step4-prompt.txt 后执行（V10 强制：bash 120s 截断 → 必须 timeout=300000 + Tee-Object 透传）：
-bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_codex_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
+bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/run_codex_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
 # 产物：step4/codex_raw.jsonl（原始输出）、step4/step4-review.md（提取的 agent_message + 环境信息）
 # 路径说明：仓库内用 opencode/ 相对路径；按 opencode/README.md 安装后脚本位于 <skill 目录>/scripts/，
-# 调用对应改为 bash --timeout 300000 -c "pwsh -File \"<skill 目录>/scripts/run_codex_step4.ps1\" -PromptFile ... | Tee-Object ..."
+# 调用对应改为 bash --timeout 300000 -c "powershell.exe -File \"<skill 目录>/scripts/run_codex_step4.ps1\" -PromptFile ... | Tee-Object ..."
 ```
 
 - **连接前提**：脚本按 PATH 解析 `codex`；PATH 无 codex 时回退 `CODEX_HOME\.sandbox-bin\codex.exe`（`CODEX_HOME` 默认 `~/.ccsc/codex-mimo`，可用环境变量覆盖）。若认证失效会 401，需用户 `codex login`（或在 Codex 应用重新登录）。
@@ -70,10 +70,10 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_codex_step4
 
 ```powershell
 # 把执行 prompt 写入 .harness/<task>/step3-prompt.txt 后执行（V10 强制：bash 120s 截断 → 必须 timeout=300000 + Tee-Object 透传）：
-bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_mimo_step3.ps1 -PromptFile '.harness/<task>/step3-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step3' | Tee-Object -FilePath '.harness/<task>/step3/run.log'"
+bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/run_mimo_step3.ps1 -PromptFile '.harness/<task>/step3-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step3' | Tee-Object -FilePath '.harness/<task>/step3/run.log'"
 # 产物：step3/mimo_step3_raw.txt（原始输出）、step3/step3-output.md
 # 路径说明：仓库内用 opencode/ 相对路径；按 opencode/README.md 安装后脚本位于 <skill 目录>/scripts/，
-# 调用对应改为 bash --timeout 300000 -c "pwsh -File \"<skill 目录>/scripts/run_mimo_step3.ps1\" -PromptFile ... | Tee-Object ..."
+# 调用对应改为 bash --timeout 300000 -c "powershell.exe -File \"<skill 目录>/scripts/run_mimo_step3.ps1\" -PromptFile ... | Tee-Object ..."
 ```
 
 - **长 prompt 兼容性（关键）**：脚本用 **stdin 管道** 把 prompt 喂给 mimo，而非 argv 位置参数。Windows 上长 prompt 会破坏 mimo 的 argv 解析（与 kimi 相同），短 prompt 正常、长 prompt 报错即此问题。**不要改成 `--file`**：mimo 的 `-f/--file` 是贪婪的附件文件路径数组，会吞掉后续参数并报 `File not found`，不能用来传 prompt。
@@ -84,10 +84,10 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_mimo_step3.
 
 ```powershell
 # V10 强制：bash 120s 截断 → 必须 timeout=300000 + Tee-Object 透传
-bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_mimo_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
+bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/run_mimo_step4.ps1 -PromptFile '.harness/<task>/step4-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step4' | Tee-Object -FilePath '.harness/<task>/step4/run.log'"
 # 产物：step4/mimo_raw.txt（原始输出）、step4/step4-review.md
 # 路径说明：仓库内用 opencode/ 相对路径；按 opencode/README.md 安装后脚本位于 <skill 目录>/scripts/，
-# 调用对应改为 bash --timeout 300000 -c "pwsh -File \"<skill 目录>/scripts/run_mimo_step4.ps1\" -PromptFile ... | Tee-Object ..."
+# 调用对应改为 bash --timeout 300000 -c "powershell.exe -File \"<skill 目录>/scripts/run_mimo_step4.ps1\" -PromptFile ... | Tee-Object ..."
 ```
 
 - 仅当 codex 认证失效且用户显式授权切 mimo 时使用。模型默认 `xiaomi/mimo-v2.5-pro`。
@@ -96,13 +96,15 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_mimo_step4.
 
 > **根因**：opencode bash 工具默认 `timeout=120000` 且输出超 2000 行/51200 字节截断；各 runner 末尾才集中 `Write-Output EXIT_CODE/ELAPSED/RAW/OUTPUT`，120s 前无增量落盘，导致超时 `-2` 与耗时证据被吞没，拆分链无法触发。
 
+> **P-07 外层 timeout 预算（v13.0.38）**：`run_step.ps1` 调用的外层 bash timeout 须 ≥ `MaxSplitDepth × TimeoutSeconds × 5`（覆盖递归 a/b 二分 + prechunk 串行），默认 180×3×5=2700s。原 300000ms(300s) 远不够（拆分链最坏 720-2700s），统一改为 **1800000ms（30min）**。`run_step.ps1` 内部另有 `MaxTotalBudget=1500s` 总预算守卫，超限即壁死+handoff 写 evidence，避免被外层硬杀留无证据。`manage_binding.ps1 -Check` / `run_vision_review.ps1` 等快速校验/单次调用保留 300000ms。
+
 **强制**：所有 `bash` 调 `run_step.ps1 / manage_binding.ps1 / run_claude_step12.ps1 / run_mimo_step*.ps1 / run_codex_step4.ps1 / run_vision_review.ps1` 必须：
 
 ```powershell
 # PowerShell 侧用 Tee-Object 实时落盘，bash 侧用 timeout=300000
-bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/run_step.ps1 -Step step1 -PromptFile '.harness/<task>/step1-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step1' | Tee-Object -FilePath '.harness/<task>/step1/run.log'"
+bash --timeout 1800000 -c "powershell.exe -NoProfile -File opencode/scripts/run_step.ps1 -Step step1 -PromptFile '.harness/<task>/step1-prompt.txt' -WorkspaceDir '<仓库根>' -OutDir '.harness/<task>/step1' | Tee-Object -FilePath '.harness/<task>/step1/run.log'"
 # manage_binding 校验同理：
-bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath '.harness/<task>/binding-check.log'"
+bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath '.harness/<task>/binding-check.log'"
 ```
 * `timeout=300000` 保证 120s 不截断；`Tee-Object` 保证 EXIT/ELAPSED/RAW 实时透传到控制台与文件，超时 `-2` 可被上游捕获并立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（V11），而非“停下汇报”。*
 
@@ -123,16 +125,34 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 - **规则**：每个 runner 在 `Out-File $msgFile` 之后、`Write-Output` 之前追加写 `evidence.json`（7 字段 + `binding_snapshot`），**不替换**原有 `stepN-output.md` 与 `EXIT_CODE/ELAPSED/RAW/OUTPUT` 控制台行。
 - **触发**：任意 runner 正常或异常退出前。
 
+### Pitfall 4 · v13.0.37 ArgumentList 方案在 PS 5.1 废棄（v13.0.38）
+- **现象**：曾尝试用 `ProcessStartInfo.ArgumentList.Add(...)` 传 claude 参数（installed 副本一度标 v13.0.37 + 此 changelog）。`ArgumentList` 是 .NET Core 2.1+ 属性；PS 5.1（.NET Framework 4.x）无此属性 → `$psi.ArgumentList` 为 `$null` → `.Add()` 抛「不能对 Null 值表达式调用方法」×6 → claude.exe 收空参数 → "Input must be provided either through stdin or as a prompt argument" → EXIT_CODE=1，step1-3 全绑 claude 时 harness 完全不可用。
+- **规则**：claude runner（`run_claude_step12.ps1`）必须用 `$psi.Arguments = '...'` 字符串拼接 + stdin pipe 喂 prompt（当前 v13.0.36/v13.0.38 实现）；**禁止改回 `ArgumentList`**。PS 5.1 也无 `StandardInputEncoding` setter（见 runner 注释，redirected StreamWriter 已默认 UTF-8，勿赋值）。
+- **触发**：有人按旧 changelog 重新实现 ArgumentList 方案时。
+
+### Pitfall 5 · bash 工具内联 PowerShell 的 `$_`/`$var` 被吞（external，v13.0.38）
+- **现象**：opencode bash 工具把内联 `powershell.exe -Command "... $_.Name ..."` 中的 `$_`/`$var` 先做 bash 变量展开，`$_` 被替换为 `/usr/bin/bash`（bash 自身路径），PS 收到语法错误命令（如 `/usr/bin/bash.FullName`），本 session 已复现 3+ 次。
+- **规则**：任何含 `$_` / `$PSVersionTable` / `$var` 的内联 PS 诊断**必须先写 .ps1 文件**再 `powershell.exe -NoProfile -File <file>.ps1` 执行；禁止 `powershell.exe -Command "..."` 内联带 PS 自动变量。本节所有示例均用 `-File` 调用脚本，不触发此坑。
+- **触发**：在 bash 工具内联 `Get-ChildItem | ForEach-Object { $_.Name }` 等含 PS 自动变量的命令时。
+- **推荐**：PS 诊断一律写 `.ps1` 临时文件（放 `.harness/<task>/tmp/` 或 `C:\Users\ADMINI~1\AppData\Local\Temp\opencode`），用 `powershell.exe -NoProfile -File` 执行，既绕开 `$_` 吞噬又留可复现脚本。
+
+执行前可调用 `.harness/p20-prechunk-fix/scripts/preflight.ps1 -CommandText <text>`；它不执行命令，若发现 PowerShell `-Command` 与 `$_`、`$var` 或 `$PSVersionTable` 的组合则返回非零，打印精确原因及 `powershell.exe -NoProfile -File <file.ps1>` 建议。示例：拒绝 `powershell.exe -Command "Get-ChildItem | ForEach-Object { $_.Name }"` 和 `powershell.exe -Command "$PSVersionTable.PSVersion"`，通过 `powershell.exe -NoProfile -File check.ps1`。该轻量检查不覆盖混淆命令。
+
+### Pitfall 6 · 修改后的 PowerShell 脚本必须保留 UTF-8 BOM（v13.0.40）
+- **规则**：`run_step.ps1`、`run_claude_step12.ps1`、`run_mimo_step3.ps1` 和 `check-bom.ps1` 必须以 `EF BB BF` 开头。
+- **检查**：`powershell.exe -NoProfile -File opencode/scripts/check-bom.ps1 -Files <paths>`；每个通过文件输出 `BOM_OK=<path>`，缺失输出 `BOM_MISSING=<path>` 并返回 1。
+- **行为**：`run_step.ps1` 在加载 binding-lock 或选择 runner 前执行此 gate，任何缺失均 fail-closed 并列出路径；不会静默修复。
+
 ## 编排流程（唯一入口：`scripts/run_step.ps1`）
 
 `step1` 至 `step4` 的唯一启动入口是 `scripts/run_step.ps1`。主 agent 不得直接调用 `Task`、任一 `harness-*` subagent 或任一独立 runner；必须先由该脚本完成 Step 0 的 lock/binding 校验，再按当前 `bindings.<step>` 路由。缺失、未锁定、非法或无法解析的 lock 一律 fail-closed，且不得启动 CLI 或 subagent。
 
-1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置。**V10 强制**：`bash --timeout 300000 -c "pwsh -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"` 校验；`locked` 必须 `true`、step3 与 step4 模型族必须不同（`constraints.step4_must_differ_from_step3_family`）；任一不满足 orchestrator fail-closed 拒绝启动。绑定变更通过编辑 `binding-lock.json` 并在 `authorization_log` 追加条目实现。
-2. **Step 1** `harness-auditor`：`bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"` → `step1-problems.md`（P 编号）。只读步骤超时 `EXIT_CODE=-2` → 立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`），不得停下汇报。零问题则终止。
-3. **Step 2** `harness-planner`：同上 `bash --timeout 300000 … | Tee-Object` → `step2-plan.md`（F-<P编号>），超时同 V11 立即拆分。
+1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置。**V10 强制**：`bash --timeout 300000 -c "powershell.exe -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"` 校验；`locked` 必须 `true`、step3 与 step4 模型族必须不同（`constraints.step4_must_differ_from_step3_family`）；任一不满足 orchestrator fail-closed 拒绝启动。绑定变更通过编辑 `binding-lock.json` 并在 `authorization_log` 追加条目实现。
+2. **Step 1** `harness-auditor`：`bash --timeout 1800000 -c "powershell.exe -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"` → `step1-problems.md`（P 编号）。只读步骤超时 `EXIT_CODE=-2` → 立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`），不得停下汇报。零问题则终止。
+3. **Step 2** `harness-planner`：同上 `bash --timeout 1800000 … | Tee-Object` → `step2-plan.md`（F-<P编号>），超时同 V11 立即拆分。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
-5. **Step 3** 执行：把方案写入 `step3-prompt.txt` → `bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step3 ... | Tee-Object -FilePath .harness/<task>/step3/run.log"` → 读 `step3/step3-output.md`。执行后对比基线验无方案外改动。
-6. **Step 4** **`harness-verifier` subagent（opencode-sub）**：`bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step4 ... | Tee-Object -FilePath .harness/<task>/step4/run.log"`（Save@step4前）→ Task 调 `harness-verifier` → 编排层 `Assert-Step4ReadOnly`（命中即 `EXIT_CODE=4 violation_step4_write` + 自动回退，§8b 正确性不豁免）→ `step4/step4-review.md`，评级 `通过`/`需调整`。CLI 备用路径（mimo/codex）同理但 Save/Assert 均在 `run_step.ps1` 内自动完成。超时同样立即拆分，不得 `auto_pass_timeout` 静默转通过（已移除）。
+5. **Step 3** 执行：把方案写入 `step3-prompt.txt` → `bash --timeout 1800000 -c "powershell.exe -File opencode/scripts/run_step.ps1 -Step step3 ... | Tee-Object -FilePath .harness/<task>/step3/run.log"` → 读 `step3/step3-output.md`。执行后对比基线验无方案外改动。
+6. **Step 4** **`harness-verifier` subagent（opencode-sub）**：`bash --timeout 1800000 -c "powershell.exe -File opencode/scripts/run_step.ps1 -Step step4 ... | Tee-Object -FilePath .harness/<task>/step4/run.log"`（Save@step4前）→ Task 调 `harness-verifier` → 编排层 `Assert-Step4ReadOnly`（命中即 `EXIT_CODE=4 violation_step4_write` + 自动回退，§8b 正确性不豁免）→ `step4/step4-review.md`，评级 `通过`/`需调整`。CLI 备用路径（mimo/codex）同理但 Save/Assert 均在 `run_step.ps1` 内自动完成。超时同样立即拆分，不得 `auto_pass_timeout` 静默转通过（已移除）。
 7. **循环**：`需调整` → 回 Step 2（只处理未通过的 P + 新阻塞；入参加挂上轮复审）。Step 1 只做一次。上限默认 3 次（可配置到 10，见 shared/core-logic.md §6），超限汇报未解决问题。
 
 ## 硬性规则（主 agent）
@@ -153,6 +173,14 @@ bash --timeout 300000 -c "pwsh -NoProfile -File opencode/scripts/manage_binding.
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.40 (2026-08-25)
+
+- **P-10 代码级实现（H-7 infra-failover）**：`manage_binding.ps1` 新增 `-EmergencyInfraFailover`（应急降级到 opencode-sub，TargetAgent 硬编码）+ `-CleanupPendingFailovers`（session 结束 ratify/回退）+ `-Check` stale pending 检测（>24h 自动回退+警告）；pending 状态存独立 `pending-auth.json`（不动 binding-lock schema_version，保持 v2）；`-FailureCategory` 枚举（runner_crash/pipe_deadlock/text_repetition/process_leak/other，拒绝 timeout/auth_failure/model_quality）；violations.log 新增结构化 infra-failure 条目（类别/降级目标/原始绑定/故障分类/pending授权路径）；`-EmergencyInfraFailover` 调 `Test-Step4FamilyDifferent` 前置校验，同族即 fail-closed 拒绝（不自动改 step4）；3 文件原子写（binding-lock+pending-auth+violations，tmp+Move，任一失败回滚，binding 最后写）；`run_step.ps1 Invoke-TaskWithSplit` 在 error-return 前检测 `EXIT_CODE=13`/stdout `INFRA_FAILURE:<category>` 信号触发降级+重试（reset attempt）；`shared/core-logic.md §4b` 第4项「代码 deferred」替换为实际 flag 引用。版本 13.0.38 → 13.0.39。
+
+### v13.0.38 (2026-08-25)
+
+- **harness-self-fix-20260825**：prechunk 跳过 opencode-sub 绑定 + 移除分片数 MaxSplitDepth 封顶（F-P01/P02）；claude runner ANTHROPIC_* 条件化保留指向 127.0.0.1 的本地代理凭据、strip dead endpoint（F-P04）；blocked_split_limit 后发 `SPLIT_BLOCKED_HANDOFF` 信号供编排层语义重拆（F-P06/P08）；外层 bash timeout 1800000ms + `run_step.ps1` 内 `MaxTotalBudget=1500s` 总预算守卫（F-P07）；runner 启动即写 `status=running` evidence（F-P09）；文档 `pwsh`→`powershell.exe`（PS 5.1）（F-P05）；新增 Pitfall 4（ArgumentList 废棄）+ Pitfall 5（bash `$_` 陷阱）（F-P03/P12）。installed 副本经重新安装从 repo 同步，消除 v13.0.37/ArgumentList/300s 漂移（F-P11/P14）。版本 13.0.36 → 13.0.38。
 
 ### v13.0.36 (2026-08-24)
 

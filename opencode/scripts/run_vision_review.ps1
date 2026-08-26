@@ -14,7 +14,7 @@ param(
 DSH 独立视觉审查脚本（不属于四步法）。主模型（如 deepseek-v4-flash）无视觉时，
 经本脚本调用 mimo CLI + 视觉模型（默认 xiaomi/mimo-v2.5）"看图"，返回结构化文本结论。
 
-用法（DSH 主 agent 或 subagent 经 pwsh 调用）：
+用法（DSH 主 agent 或 subagent 经 powershell.exe 调用）：
   run_vision_review.ps1 -ImageFiles "C:\shot\before.png","C:\shot\after.png" `
     -Prompt "对比这两张截图的前后视觉差异，重点看布局/颜色/溢出" `
     -WorkspaceDir "C:\repo" -OutDir "C:\repo\.harness\vision"

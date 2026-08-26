@@ -121,8 +121,8 @@ switch ($agent) {
 # 调用方必须用 bash timeout=300000 + Tee-Object 实时落盘，否则 EXIT_CODE 末尾行被 120s 截断（V10）
 function Merge-DshEvidence([string]$od,[int]$ec,[string]$status,[int]$att){ $evFile=Join-Path $od "evidence.json"; $ev=[ordered]@{schema_version=1;task_id=(Split-Path -Leaf $WorkspaceDir);step=$Step;attempt=$att;agent=$agent;exit_code=$ec;status=$status;split_parent=$SplitOf;timestamp=(Get-Date).ToString("o")}; $ev|ConvertTo-Json -Depth 5|Out-File -LiteralPath $evFile -Encoding utf8 }
 $exitCode = $LASTEXITCODE
-# Step4 CLI 快照校验（§8b）：即使测试通过也回退，命中即 EXIT_CODE=4
-if ($Step -eq "step4" -and $step4GuardLoaded -and $agent -ne "dsh-sub" -and $exitCode -eq 0) {
+# Step4 CLI 快照校验（§8b，P-13）：不限 exitCode——超时(-2)/非零退出前 step4 仍可能越权写文件，均须 Assert；命中即 EXIT_CODE=4 + 自动回退
+if ($Step -eq "step4" -and $step4GuardLoaded -and $agent -ne "dsh-sub") {
     try {
         $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $agent
         if ($changed -and $changed.Count -gt 0) {

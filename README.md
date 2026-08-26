@@ -25,7 +25,7 @@
 
 绑定由 `~/.hermes/binding-lock.json`（Hermes）决定，变更需 `--authorize-binding-change` 授权。后端标识和模型族也在该锁的 `backends` 中声明，执行器不固化任何步骤的 CLI。opencode 与 DSH 侧绑定路径见各自 README（`opencode/README.md`、`dsh/README.md`）。
 
-> **DSH 适配层默认不绑定外部 CLI**，而是用 DSH 自带的 `subagent` 工具（后端标识 `dsh-sub`，每步一个独立 subagent，模型族由 `dsh/binding-lock.json` 的 `models` 配置决定）。上述 CLI 可作为 DSH 的可选绑定（用户显式授权后经 pwsh 调用）。
+> **DSH 适配层默认不绑定外部 CLI**，而是用 DSH 自带的 `subagent` 工具（后端标识 `dsh-sub`，每步一个独立 subagent，模型族由 `dsh/binding-lock.json` 的 `models` 配置决定）。上述 CLI 可作为 DSH 的可选绑定（用户显式授权后经 powershell.exe 调用）。
 
 ## 4步法流程
 

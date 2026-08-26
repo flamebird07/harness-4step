@@ -10,10 +10,25 @@ param(
     [Parameter(Mandatory=$true)][string]$OutDir,
     [int]$TimeoutSeconds = 180,
     [int]$MaxAttempts = 3,
-    [int]$MaxSplitDepth = 3
+    [int]$MaxSplitDepth = 3,
+    [int]$MaxTotalBudget = 1500   # P-07: 总预算（秒），须 < 外层 bash timeout；超限即壁死+handoff，避免外层硬杀丢证据
 )
+$bomScript = Join-Path $PSScriptRoot "check-bom.ps1"
+if (-not (Test-Path -LiteralPath $bomScript)) { throw "BOM gate missing: $bomScript" }
+$bomFiles = @(
+    (Join-Path $PSScriptRoot "run_step.ps1"),
+    (Join-Path $PSScriptRoot "run_claude_step12.ps1"),
+    (Join-Path $PSScriptRoot "run_mimo_step3.ps1"),
+    $bomScript
+)
+$bomOutput = @(& $bomScript -Files $bomFiles 2>&1)
+if ($LASTEXITCODE -ne 0) {
+    $missingBom = @($bomOutput | Where-Object { $_.ToString() -match '^BOM_MISSING=' })
+    throw "BOM gate failed closed: $($missingBom -join '; ')"
+}
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$scriptBudgetStart = Get-Date   # P-07: 总预算计时起点
 
 # Step 0：加载 binding-lock.json fail-closed 校验（详见 F-PBINDING）
 # F-P3：执行层与管理层读同一锁（与 manage_binding.ps1 Resolve-LockPath 同源）。
@@ -146,10 +161,16 @@ function Invoke-TaskWithSplit {
         [int]$AttemptBase, [string]$InitialSplitParent
     )
     $curPrompt = $TaskPrompt; $curOut = $TaskOut; $splitParent = $InitialSplitParent
+    $infraFailoverApplied = $false   # [P-09] 应急降级一次性守卫，防止 opencode-sub 再失败时无限重置 attempt
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         New-Item -ItemType Directory -Path $curOut -Force | Out-Null
+        $att = $AttemptBase + $attempt - 1   # P-07 fix: assign before budget guard (was after Invoke-Runner)
+        # P-07: 总预算守卫——超限即壁死（exit 3）+ handoff（由外层 F-P06/P08 发 SPLIT_BLOCKED_HANDOFF）
+        if ($MaxTotalBudget -gt 0 -and ((Get-Date) - $scriptBudgetStart).TotalSeconds -gt $MaxTotalBudget) {
+            Merge-Evidence $curOut 3 "blocked_split_limit" $att $splitParent
+            return [pscustomobject]@{ ExitCode=3; Status="blocked_split_limit"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent; Detail="total_budget_exceeded" }
+        }
         $r = Invoke-Runner $curPrompt $curOut
-        $att = $AttemptBase + $attempt - 1
         if ($r.ExitCode -eq 99) {
             Merge-Evidence $curOut 99 "handoff_pending" $att $splitParent
             # 信号不能在本函数内 Write-Output：调用方会把函数输出赋值给 $res，
@@ -178,6 +199,36 @@ function Invoke-TaskWithSplit {
             }
             Merge-Evidence $curOut 0 $status $att $splitParent
             return [pscustomobject]@{ ExitCode=0; Status=$status; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+        }
+        # [P-09] 基础设施故障应急降级检测（core-logic §4b 第4项，设计决策 #8）
+        # 信号：EXIT_CODE=13，或 EXIT_CODE=1 + stdout 'INFRA_FAILURE:<category>' 标记
+        # 命中且未降级过 → 调 manage_binding.ps1 -EmergencyInfraFailover → 重读 binding → 重置 attempt 重试
+        $infraCat = $null
+        if ($r.ExitCode -eq 13) {
+            $infraCat = "other"
+        } elseif ($r.ExitCode -eq 1) {
+            $m = ($r.Output | Select-String -Pattern '^INFRA_FAILURE:(runner_crash|pipe_deadlock|text_repetition|process_leak|other)\s*$' | Select-Object -First 1)
+            if ($m) { $infraCat = $m.Matches[0].Groups[1].Value }
+        }
+        if ($infraCat -and -not $infraFailoverApplied) {
+            $infraFailoverApplied = $true
+            $evPath = Join-Path $curOut "evidence.json"
+            $mbScript = Join-Path $PSScriptRoot "manage_binding.ps1"
+            $reasonStr = "runner infra-failure (exit=$($r.ExitCode), category=$infraCat) detected by run_step.ps1 Invoke-TaskWithSplit"
+            # & 调用（非 dot-source）：manage_binding 的 exit 仅作用于被调脚本，$LASTEXITCODE 回传
+            $mbOut = & $mbScript -EmergencyInfraFailover -Step $Step -FailureCategory $infraCat -FailureEvidence "exit=$($r.ExitCode); evidence=$evPath" -Reason $reasonStr 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Output "INFRA_FAILOVER_REJECTED step=$Step category=$infraCat (manage_binding exit=$LASTEXITCODE)"
+                Merge-Evidence $curOut $r.ExitCode "infra_failover_rejected" $att $splitParent
+                return [pscustomobject]@{ ExitCode=$r.ExitCode; Status="error"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+            }
+            Write-Output "INFRA_FAILOVER_APPLIED step=$Step category=$infraCat → retry with new binding"
+            # 重读 binding（failover 已把 $Step 改为 opencode-sub）
+            $lock2 = Get-Content -LiteralPath $lockFile -Encoding UTF8 -Raw | ConvertFrom-Json
+            $script:b = $lock2.bindings.$Step   # 覆盖脚本作用域 $b（Invoke-Runner 读同一 $b）
+            Merge-Evidence $curOut 13 "infra_failover_applied" $att $splitParent
+            $attempt = 0   # 重置 attempt 计数；for 循环 ++→1 重跑（opencode-sub 即返回 99 handoff，无再触发风险）
+            continue
         }
         if ($r.ExitCode -ne -2) {
             Merge-Evidence $curOut $r.ExitCode "error" $att $splitParent
@@ -258,6 +309,7 @@ $lines0 = $txt0 -split "`r?`n"
 $promptChars = [System.Text.Encoding]::UTF8.GetByteCount($txt0)
 $preDir = Join-Path $OutDir "prechunks"
 $splitParent = $null
+# P-01: 所有绑定统一 prechunk，长 prompt 由每个 chunk 独立移交/执行，避免丢失后续 chunks。
 if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
     New-Item -ItemType Directory -Path $preDir -Force | Out-Null
     $chunks = New-Object System.Collections.ArrayList
@@ -280,12 +332,9 @@ if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
         }
     }
     if ($cur.Count -gt 0) { [void]$chunks.Add(($cur -join "`n")) }
-    # V11 壁垒：prechunk 受 MaxSplitDepth 与最小粒度约束，不得绕过 §6.1
-    if ($chunks.Count -gt $MaxSplitDepth) {
-        Merge-Evidence $OutDir 3 "blocked_split_limit" 1 $PromptFile
-        Write-Output "EXIT_CODE=3 status=blocked_split_limit prechunk_exceeds_depth=$($chunks.Count) MaxSplitDepth=$MaxSplitDepth"
-        exit 3
-    }
+    # P-02: prechunk 分片数不受 MaxSplitDepth 约束（那是递归拆分深度壁垒 §6.1，不是 prechunk 分片数）。
+    # 原代码用 MaxSplitDepth 封顶 prechunk 分片数 → >3 片 prompt 直接壁死丢数据，已移除。
+    # 串行调度循环（下方）天然处理任意 N 片；超大 prompt 由 Invoke-TaskWithSplit 内部递归拆分兜底。
     if ($chunks.Count -eq 1 -and $lines0.Count -lt 4) {
         Merge-Evidence $OutDir 3 "blocked_split_limit" 1 $PromptFile
         Write-Output "EXIT_CODE=3 status=blocked_split_limit min_granularity prechunk"
@@ -299,33 +348,44 @@ if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
     }
     # 串行调度每个预分片（修复：02+ 不再静默丢弃）
     $results = @()
+    $handoffs = @()
     for ($ci = 1; $ci -le $chunks.Count; $ci++) {
         $cp  = Join-Path $preDir ("{0:D2}_prompt.txt" -f $ci)
         $cod = Join-Path $preDir ("{0:D2}" -f $ci)
         $res = Invoke-TaskWithSplit -TaskPrompt $cp -TaskOut $cod -AttemptBase $ci -InitialSplitParent $PromptFile
         Write-Output "PRECHUNK $ci/$($chunks.Count): exit=$($res.ExitCode) status=$($res.Status)"
         $results += $res
-        # opencode-sub 合法 handoff：移交 orchestrator，终止后续分片调度
+        # opencode-sub handoff：保留并聚合全部分片信号，继续调度后续分片。
         if ($res.ExitCode -eq 99) {
-            foreach ($line in $res.Output) { Write-Output $line }
-            if ($Step -eq "step4") {
-                Write-Output "STEP4_GUARD_SNAPSHOT=$OutDir/pre-step4.sha256 (Assert deferred to orchestrator for opencode-sub)"
+            foreach ($line in $res.Output) {
+                $handoffs += [pscustomobject]@{ Chunk = $ci; Line = $line }
+                Write-Output "PRECHUNK_HANDOFF $ci/$($chunks.Count): $line"
             }
-            Merge-Evidence $OutDir 99 "handoff_pending" 1 $PromptFile
-            Write-Output "EXIT_CODE=99"; exit 99
         }
+    }
+    if ($handoffs.Count -gt 0) {
+        $subagent = ($handoffs | Where-Object { $_.Line -match '^SUBAGENT=' } | Select-Object -First 1).Line -replace '^SUBAGENT=', ''
+        if (-not $subagent) { $subagent = "unknown" }
+        Write-Output "BINDING=opencode-sub STEP=$Step SUBAGENT=$subagent CHUNKS=$($chunks.Count) EXIT_CODE=99"
+        foreach ($h in $handoffs) { Write-Output "PRECHUNK_HANDOFF_CHUNK=$($h.Chunk)/$($chunks.Count) $($h.Line)" }
+        Merge-Evidence $OutDir 99 "handoff_pending" 1 $PromptFile
+        Write-Output "EXIT_CODE=99"; exit 99
     }
     $worse = 0
     foreach ($res in $results) { if ($res.ExitCode -ne 0) { $worse = $res.ExitCode; break } }
     $status = if ($worse -eq 0) { "prechunk_success" } else { "prechunk_partial" }
     Merge-Evidence $OutDir $worse $status 1 $PromptFile
+    # P-06/P-08: 壁死后 handoff（prechunk 路径）——编排层消费信号对原 prompt 做语义重拆
+    if ($worse -eq 3) { Write-Output "SPLIT_BLOCKED_HANDOFF=$PromptFile NEEDS_SEMANTIC_RESPLIT=1" }
     Write-Output "EXIT_CODE=$worse status=$status"
     exit $worse
 }  # end if ($lines0.Count -gt $prechunkTrigger)
-# 未预拆分（prompt ≤ 60 行）：单任务执行
+# 未预拆分（prompt ≤ 60 行 或 opencode-sub）：单任务执行
 $res = Invoke-TaskWithSplit -TaskPrompt $PromptFile -TaskOut $OutDir -AttemptBase 1 -InitialSplitParent $null
 if ($res.ExitCode -eq 99) {
     foreach ($line in $res.Output) { Write-Output $line }
 }
+# P-06/P-08: 壁死后 handoff（单任务路径）——编排层消费信号对原 prompt 做语义重拆（不换绑定、不豁免 §8b）
+if ($res.ExitCode -eq 3) { Write-Output "SPLIT_BLOCKED_HANDOFF=$PromptFile NEEDS_SEMANTIC_RESPLIT=1" }
 Write-Output "EXIT_CODE=$($res.ExitCode) status=$($res.Status)"
 exit $res.ExitCode

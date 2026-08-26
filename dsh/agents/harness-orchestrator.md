@@ -17,7 +17,7 @@
 
 ## 绑定检查（Step 0）
 
-开始任何四步闭环前，必须先经 pwsh 运行 `dsh/scripts/manage_binding.ps1 -Check` 校验绑定；输出无 `BINDING_LOCK_OK` 即停止并向用户报告，不得继续 Step 1。绑定默认全部为 `dsh-sub`（DSH subagent），绑定变更只能经 `dsh/scripts/manage_binding.ps1 -AuthorizeStep <step> -Agent <agent> -Authorization "<用户授权原文>"` 完成。
+开始任何四步闭环前，必须先经 powershell.exe 运行 `dsh/scripts/manage_binding.ps1 -Check` 校验绑定；输出无 `BINDING_LOCK_OK` 即停止并向用户报告，不得继续 Step 1。绑定默认全部为 `dsh-sub`（DSH subagent），绑定变更只能经 `dsh/scripts/manage_binding.ps1 -AuthorizeStep <step> -Agent <agent> -Authorization "<用户授权原文>"` 完成。
 
 ## 路由规则
 
@@ -31,7 +31,7 @@
 ## subagent 调度契约
 
 - 每次 `subagent` 调用 `run_in_background: false`（四步闭环内串行）；仅并行侦察/独立审查包用 `run_in_background: true`。
-- Step 3（实施）的 subagent 可写文件（有 write/edit/pwsh 权限），Step 1/2/4（审查/方案/复审）的 subagent 由提示词强制只读（禁止 write/edit/pwsh 写操作），并用 `git diff > baseline.diff` 事后校验，越权改动精确回退。
+- Step 3（实施）的 subagent 可写文件（有 write/edit/powershell.exe 权限），Step 1/2/4（审查/方案/复审）的 subagent 由提示词强制只读（禁止 write/edit/powershell.exe 写操作），并用 `git diff > baseline.diff` 事后校验，越权改动精确回退。
 - step4 与 step3 必须不同模型族：subagent 创建时按 `dsh/binding-lock.json` 的 `models` 配置给 step3/step4 指定不同 `provider`/`model`（DSH `subagent` 工具支持 provider/model 覆盖）。
 - 每个 subagent 的 prompt 必须自包含：角色、目标、范围、非目标、输入、输出格式、完成标准、硬性禁止。用 `dsh/agents/` 下对应模板 + 具体任务事实。
 

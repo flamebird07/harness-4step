@@ -58,6 +58,7 @@ Step 4 必须读取 Step 3 验证状态后决定是否补跑回归：
 1. 一次精简重试（仅当失败类型可重试，见 Hermes 适配层 Failure Classification Matrix）
 2. **拆分**（拆分优先于降级）：触发拆分门（**首次超时**或**两次非超时失败**）→ 生成子项，各子项独立走完整 4 步
 3. 降级换 CLI **仅限**：拆分已达最小粒度壁垒（单一函数/行区间，`BLOCKED_SPLIT_LIMIT`）仍失败，或该步绑定后端不可用（command not found / 认证 401）且无可拆分单元。
+4. **基础设施故障应急降级（v13.0.38 doc-only；v13.0.39 代码实现）**：当失败根因是**运行器自身代码 bug**（如 v13.0.37 ArgumentList 在 PS 5.1 崩溃、runner 进程泄漏、stdin 管道死锁），而非模型质量/超时/认证时，允许 orchestrator 临时把该步切到 `opencode-sub`/`dsh-sub`（原生子代理）并**立即记录 violations.log**（类别=infra-failure），随后在**同一 session 内补用户显式授权**（`manage_binding.ps1 -AuthorizeStep` 补写 authorization_log）；若 session 结束前未补授权，回退绑定并报告。此类别**不得**用于模型输出质量、超时、prompt 过大——这些仍走拆分/循环。代码级实现见 `opencode/scripts/manage_binding.ps1 -EmergencyInfraFailover` 标志 + retroactive-auth 流程（v13.0.39 落地）：`-EmergencyInfraFailover -Step <step> -FailureCategory <runner_crash|pipe_deadlock|text_repetition|process_leak|other> -FailureEvidence <证据> -Reason <文本>` 原子写 binding-lock.json（改 opencode-sub/dsh-sub）+ `pending-auth.json`（独立 pending 态，不动 binding-lock schema_version）+ `docs/violations.log`（结构化 infra-failure 条目）；session 内补 `-AuthorizeStep` ratify，未补则 `-CleanupPendingFailovers`（session 结束）或 `-Check`（stale>24h 自动回退）回退绑定。`run_step.ps1 Invoke-TaskWithSplit` 在 error-return 前检测 `EXIT_CODE=13` 或 stdout `INFRA_FAILURE:<category>` 信号触发降级+重试。fail-closed 绑定门保留（pending 授权未补即回退，不构成旁路）。
 
 规则：只读步骤在任何情况下**不得**因为「问题过大/质量不佳」而换 CLI 降级——那正是 v13.0.9#5 禁止的绕过。拆分优先的理由：换 CLI 不降问题的固有复杂度，只换模型；且拆分不触碰绑定锁，不构成绑定违规。opencode 适配层只在本节落地相同的拆分信号（`run_step.ps1 -SplitOf`），不复制判定逻辑。
 
@@ -121,7 +122,7 @@ Step 4 必须读取 Step 3 验证状态后决定是否补跑回归：
 
 | 能力 | Hermes 适配层 | opencode 适配层 | DeepSeek Harness (DSH) 适配层 |
 |------|--------------|-----------------|------------------------------|
-| 执行后端 | `run_cli.py` + `binding-lock.json` | bash 调 CLI（绑定由 `binding-lock.json` + `manage_binding.ps1` 管理）+ `task` 调度 subagent（备用） | DSH `subagent` 工具为主（`dsh-sub`，经 `run_step.ps1` 输出信号后由主 agent 调度）+ 可选 CLI（复用 opencode runner，经 pwsh） |
+| 执行后端 | `run_cli.py` + `binding-lock.json` | bash 调 CLI（绑定由 `binding-lock.json` + `manage_binding.ps1` 管理）+ `task` 调度 subagent（备用） | DSH `subagent` 工具为主（`dsh-sub`，经 `run_step.ps1` 输出信号后由主 agent 调度）+ 可选 CLI（复用 opencode runner，经 powershell.exe） |
 | 配置 | `~/.hermes/binding-lock.json` + `harness-config.yaml` | `opencode/binding-lock.json`（模板）+ `harness-config` + `opencode/SKILL.md` | `~/.dsh/harness/binding-lock.json`（模板 `dsh/binding-lock.json`）+ `harness-config` + `dsh/SKILL.md` |
 | 反绕过 | `plugin/`（four-step-enforcer 插件） | 绑定 CLI：prompt 只读前缀 + 统一经 `scripts/` 脚本调用 + **step4 快照强制（Save/Assert，§8b）** + 事后基线回退；绑定 opencode-sub：subagent `permission: edit: deny` **+ 主编排层快照强制（Save@step4前 → Assert@step4后，§8b）** | 绑定 dsh-sub：提示词强制只读（DSH 无权限字段）+ 统一经 `run_step.ps1` 分派 + **step4 快照强制（Save/Assert，§8b）** + 事后 `git diff > baseline.diff` 回退 |
 | 模型族 | CLI 侧配置 | CLI 侧配置 / opencode-sub 固定族 | `dsh/binding-lock.json` 的 `models` 字段决定 dsh-sub 的族；step4≠step3 必须不同族（`manage_binding.ps1 -Check` 强制） |
@@ -176,6 +177,7 @@ Step 4 必须读取 Step 3 验证状态后决定是否补跑回归：
 - **最大尝试次数 = 3**（可配置 `MaxAttempts`）：超 `MaxAttempts` 或 `MaxSplitDepth` 任一即触壁垒。
 - **降级出口**：触壁垒时写 `evidence.json` 字段 `status="blocked_split_limit"`、`exit_code=-2`，进程以 `EXIT_CODE=3` 返回，并向上游报告"该子问题无法在自动拆分内闭环，需人工介入或重切绑定"。
 - **不绕过绑定**：拆分重跑沿用原步绑定，禁止借拆分换模型族（换绑定走 Step 2 显式授权）。
+- **壁死后语义重拆 handoff（v13.0.38 新增，针对机械行二分不降负载）**：触壁垒（`status=blocked_split_limit`/`EXIT_CODE=3`）时，适配层除写 evidence 外须额外向 stdout 输出 `SPLIT_BLOCKED_HANDOFF=<原 prompt 文件>` + `NEEDS_SEMANTIC_RESPLIT=1` 信号；编排层（orchestrator）消费该信号后，把**原 prompt** 按问题维度（如按文件 / 按审计子目标）语义重拆为若干 focused 子 prompt，各子项作为新 item 入队独立走完整 step1→4。此为横向语义降载出口，与递归行二分（纵向）正交：行二分把大 prompt 切小但每半仍是同质任务（仍读同一大文件、工作量不减），语义重拆按维度切分让每子项工作量真正下降。语义重拆**不换绑定**（沿用原步 CLI/subagent）、**不豁免 §8b**（越权仍回退+循环）；仅最小粒度壁垒 + 语义重拆均失败后才走 §4b 显式授权降级。
 
 _此节由 opencode 端 v13.0.13 miniset 升级引入（2026-08-18）。详见 `opencode/scripts/run_step.ps1` 与 `opencode/SKILL.md` 的 Pitfalls 节。_
 

@@ -136,6 +136,12 @@ try {
 $elapsed = ((Get-Date) - $started).TotalSeconds
 
 $output | Out-File -LiteralPath $rawFile -Encoding utf8
+$textRepetition = (($output | ForEach-Object { if ($null -eq $_) { "" } else { $_.ToString() } }) -join "`n").Contains("Text repetition detected")
+if ($textRepetition) {
+    $warnings += "text_repetition"
+    $exitCode = 13
+    Write-Output "INFRA_FAILURE:text_repetition"
+}
 
 $lines = @($output | ForEach-Object { if ($null -eq $_) { "" } else { $_.ToString() } })
 $usable = @($lines | Where-Object {
@@ -166,7 +172,7 @@ $evidence = [ordered]@{
     attempt          = 1
     agent            = "mimo"
     exit_code        = $exitCode
-    status           = if ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
+    status           = if ($textRepetition) { "infrastructure_error" } elseif ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
     output_files     = @{ raw = $rawFile; output = $msgFile; evidence = (Join-Path $OutDir "evidence.json") }
     split_parent     = $null
     timestamp        = $started.ToString("o")

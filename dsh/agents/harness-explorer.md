@@ -24,6 +24,6 @@
 
 ## 硬性禁止（违反即失败）
 
-- 禁止 write / edit / pwsh 写命令创建或修改任何文件
+- 禁止 write / edit / powershell.exe 写命令创建或修改任何文件
 - 禁止审查（输出 P 编号问题清单）
 - 禁止规划（输出 F-<P> before/after 方案）

@@ -80,7 +80,7 @@ harness-4step/            # GitHub 仓库（同一仓库）
 
 主模型（如 deepseek-v4-flash）与四步法各步绑定后端（DSH subagent）默认无视觉时，当某步需要"看图"（step1 审截图 / step3 核对 UI 效果 / step4 对比 before-after）经本能力处理。**不是独立功能，是四步法内部的跨步视觉兜底**（不是第五步）；Hermes 自带视觉不触发，DSH 与 opencode 支持。
 
-- **机制**：主 agent → `subagent` 调 `vision-reviewer` → pwsh 调共享 runner `opencode/scripts/run_vision_review.ps1` → mimo CLI + 视觉模型（默认 `xiaomi/mimo-v2.5`）看图 → 返回结构化文本结论（作为该步输入佐证）。
+- **机制**：主 agent → `subagent` 调 `vision-reviewer` → powershell.exe 调共享 runner `opencode/scripts/run_vision_review.ps1` → mimo CLI + 视觉模型（默认 `xiaomi/mimo-v2.5`）看图 → 返回结构化文本结论（作为该步输入佐证）。
 - **共享脚本**：`opencode/scripts/run_vision_review.ps1`（DSH 与 opencode 共用，逻辑见 shared/core-logic.md §11；`-ImageFiles` 必填，可多张；`-Model` 默认 `xiaomi/mimo-v2.5`；产物 `vision-review.md`）。从仓库根目录调用；DSH 侧经 `../../opencode/scripts/` 引用。
 - **agent 模板**：`dsh/agents/vision-reviewer.md`。
 - **前提**：本机已装并登录 mimo CLI（`references/mimo-cli-login.md`；`mimo providers whoami` 输出 Provider: MiMo）。

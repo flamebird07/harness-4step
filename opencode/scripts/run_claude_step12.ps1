@@ -30,14 +30,26 @@ $prompt = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
 $prompt = $prompt.Trim()
 if (-not $prompt) { throw "Prompt file is empty" }
 
-# Strip any ANTHROPIC_* overrides inherited from the shell environment.
-# claude-code reads its own credentials/base-url from ~/.claude/settings.json;
-# leftover shell vars (e.g. deepseek proxy) point at a dead endpoint and hang.
-foreach ($name in @("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
-                    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                    "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
-                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME")) {
+# P-04: 条件化 ANTHROPIC_* 处理——仅当 ANTHROPIC_BASE_URL 指向本地凭据池代理（127.0.0.1 / localhost）
+# 时保留 BASE_URL/API_KEY/AUTH_TOKEN（claude-code-credential-pool skill 依赖此代理）；否则 strip 之，
+# 让 claude 回落 ~/.claude/settings.json 取凭据，避免残留 dead endpoint（如 deepseek proxy）导致 hang。
+# 模型名覆盖变量（ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_*）一律 strip：它们是 shell 残留，会无视代理路径
+# 钉死模型；模型选择应由 settings.json 控制。
+$anthropicBaseUrl = $env:ANTHROPIC_BASE_URL
+$keepLocalProxy = $anthropicBaseUrl -and ($anthropicBaseUrl -match '127\.0\.0\.1|localhost')
+if (-not $keepLocalProxy) {
+    foreach ($name in @("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")) {
+        Remove-Item ("Env:" + $name) -ErrorAction SilentlyContinue
+    }
+}
+foreach ($name in @("ANTHROPIC_MODEL",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME")) {
     Remove-Item ("Env:" + $name) -ErrorAction SilentlyContinue
 }
 
@@ -66,13 +78,41 @@ $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
 $psi.WorkingDirectory = $WorkspaceDir
 $psi.Arguments = '-p --output-format text --add-dir "' + $WorkspaceDir.Replace('"', '\"') + '"'
 if ($Permissions -ne "default") { $psi.Arguments += ' --permission-mode ' + $Permissions }
+$argSummary = [ordered]@{
+    executable = (Split-Path -Leaf $claudeExe)
+    switches = @("-p", "--output-format", "text", "--add-dir", $(if ($Permissions -ne "default") { "--permission-mode" } else { $null })) | Where-Object { $_ }
+    add_dir = $true
+    workspace_path_length = $WorkspaceDir.Length
+}
+$promptByteCount = [System.Text.Encoding]::UTF8.GetByteCount($prompt)
 $proc = New-Object System.Diagnostics.Process
 $proc.StartInfo = $psi
 if (-not $proc.Start()) { throw "Failed to start Claude executable: $claudeExe" }
 $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
 $stderrTask = $proc.StandardError.ReadToEndAsync()
-$proc.StandardInput.Write($prompt)
-$proc.StandardInput.Close()
+$stdinWrite = "success"
+try { $proc.StandardInput.Write($prompt); $proc.StandardInput.Close() }
+catch { $stdinWrite = "failure: $($_.Exception.Message)"; try { $proc.StandardInput.Close() } catch {} }
+
+# P-09: 启动后立即写 "running" evidence.json——外层硬杀（SIGKILL/timeout）时仍有启动记录，
+# 不再留下空目录无证据。最终正常退出会覆盖为完整 evidence（见下方 $evidence | ConvertTo-Json）。
+$evFileEarly = Join-Path $OutDir "evidence.json"
+$evRunning = [ordered]@{
+    schema_version   = 1
+    task_id          = (Split-Path -Leaf $WorkspaceDir)
+    step             = $Step
+    attempt          = 1
+    agent            = "claude"
+    exit_code        = $null
+    status           = "running"
+    output_files     = @{ raw = $rawFile; output = $msgFile; evidence = $evFileEarly }
+    split_parent     = $null
+    timestamp        = $started.ToString("o")
+    warnings         = @()
+    binding_snapshot = @{ agent = "claude"; permission_mode = $Permissions; model = $null }
+}
+$evRunning | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $evFileEarly -Encoding utf8
+
 if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
     $proc.WaitForExit()
     $exitCode = $proc.ExitCode
@@ -92,6 +132,13 @@ $proc.Dispose()
 $elapsed = ((Get-Date) - $started).TotalSeconds
 
 $output | Out-File -LiteralPath $rawFile -Encoding utf8
+$combinedRaw = (($output | ForEach-Object { if ($null -eq $_) { "" } else { $_.ToString() } }) -join "`n")
+$jsonParseFailure = $combinedRaw.Contains("API Error: Failed to parse JSON")
+if ($jsonParseFailure) {
+    $exitCode = 13
+    Write-Output "INFRA_FAILURE:other"
+    Write-Output "INFRA_FAILURE_DETAIL:claude_json_parse"
+}
 
 $lines = @($output | ForEach-Object { if ($null -eq $_) { "" } else { $_.ToString() } })
 $usable = @($lines | Where-Object {
@@ -118,11 +165,12 @@ $evidence = [ordered]@{
     attempt          = 1
     agent            = "claude"
     exit_code        = $exitCode
-    status           = if ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
+    status           = if ($jsonParseFailure) { "infrastructure_error" } elseif ($exitCode -eq 0) { "success" } elseif ($exitCode -eq -2) { "timeout" } else { "error" }
     output_files     = @{ raw = $rawFile; output = $msgFile; evidence = (Join-Path $OutDir "evidence.json") }
     split_parent     = $null
     timestamp        = $started.ToString("o")
-    warnings         = @()
+    warnings         = $(if ($jsonParseFailure) { @("claude_json_parse") } else { @() })
+    diagnostics      = @{ argument_summary = $argSummary; prompt_utf8_bytes = $promptByteCount; stdin_write = $stdinWrite; stderr = $stderr; json_parse_failure = $jsonParseFailure }
     binding_snapshot = @{ agent = "claude"; permission_mode = $Permissions; model = $null }
 }
 $evFile = Join-Path $OutDir "evidence.json"

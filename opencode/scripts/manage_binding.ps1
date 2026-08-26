@@ -5,9 +5,9 @@ opencode 适配层绑定管理：加载/校验/展示 binding-lock.json，仅允
 
 V10 调用约定：bash 调本脚本及 run_step.ps1 必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log 实时透传，否则 EXIT_CODE/BINDING_LOCK_OK 因 120s 截断丢失
 用法（bash 侧）：
-  bash --timeout 300000 -c "pwsh -File manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"
-  bash --timeout 300000 -c "pwsh -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"
-用法（pwsh 直接）：
+  bash --timeout 300000 -c "powershell.exe -File manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"
+  bash --timeout 300000 -c "powershell.exe -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"
+用法（powershell.exe 直接）：
   manage_binding.ps1 -ShowBindings                          # 展示每步绑定 + 合并配置后的超时 + 可执行文件状态
   manage_binding.ps1 -Check                                 # 校验（fail-closed）：lock 存在且有效、bindings 恰好 step1..step4、step4 与 step3 不同模型族
   manage_binding.ps1 -InstallFromRepo                       # 幂等：把仓库 opencode/binding-lock.json 同步到本机锁路径（保留本机 authorization_log）
@@ -30,7 +30,14 @@ param(
     [string]$AuthorizeStep,
     [string]$AuthorizeSteps,
     [string]$Agent,
-    [string]$Authorization
+    [string]$Authorization,
+    # [P-01] 应急降级参数集（与 -AuthorizeStep 语义不同：先写后补授权）
+    [switch]$EmergencyInfraFailover,
+    [switch]$CleanupPendingFailovers,
+    [string]$Step,
+    [ValidateSet("runner_crash","pipe_deadlock","text_repetition","process_leak","other","timeout","auth_failure","model_quality")]
+    [string]$FailureCategory,
+    [string]$FailureEvidence
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +80,7 @@ function Load-Lock([string]$Path) {
     }
     try { $data = Get-Content -LiteralPath $Path -Encoding UTF8 -Raw | ConvertFrom-Json }
     catch { Fail-Cli "Invalid JSON in binding lock: $Path ($_)" }
+    # [P-03] schema_version 保持 v2：pending 状态存独立 pending-auth.json，不扩展 binding-lock.json schema
     if ($data.schema_version -ne 2) { Fail-Cli "Invalid binding lock: schema_version 必须为 2（$Path）" }
     if (-not $data.locked) { Fail-Cli "Invalid binding lock: locked 必须为 true（$Path）" }
     if ($null -eq $data.backends -or @($data.backends.PSObject.Properties).Count -eq 0) { Fail-Cli "Binding lock 必须声明非空 backends（$Path）" }
@@ -117,10 +125,40 @@ function Test-BindingsSupported($Lock) {
 }
 
 if ($ShowBindings -or $Check) {
-    $lock = Load-Lock (Resolve-LockPath)
+    $path = Resolve-LockPath
+    $lock = Load-Lock $path
     $cfg = Load-Config (Resolve-ConfigPath)
     Test-BindingsSupported $lock
     Test-Step4FamilyDifferent $lock
+    # [P-04] stale pending failover 检测（>24h 未 ratify → 自动回退绑定 + 警告）
+    $pendingPath = Join-Path (Split-Path -Parent $path) "pending-auth.json"
+    if (Test-Path -LiteralPath $pendingPath) {
+        $raw = Get-Content -LiteralPath $pendingPath -Encoding UTF8 -Raw -ErrorAction SilentlyContinue
+        $pending = @(); if ($raw) { try { $j = $raw | ConvertFrom-Json; if ($j) { $pending = @($j) } } catch { $pending = @() } }
+        $now = Get-Date; $stale = @()
+        foreach ($e in $pending) {
+            if ($e.ratified -eq $true) { continue }
+            try { $ts = [datetime]$e.timestamp } catch { $stale += $e; continue }
+            if (($now - $ts).TotalHours -gt 24) { $stale += $e }
+        }
+        if ($stale.Count -gt 0) {
+            foreach ($e in $stale) {
+                if ((Get-BoundAgent $lock $e.step) -eq $e.target_agent) {
+                    Set-BoundAgent $lock $e.step $e.original_agent
+                    Write-Output "WARN: stale pending failover (>$($e.timestamp), step=$($e.step)) auto-reverted to $($e.original_agent)"
+                }
+            }
+            Test-Step4FamilyDifferent $lock
+            $tmp = $path + ".tmp"
+            Set-Content -LiteralPath $tmp -Value ($lock | ConvertTo-Json -Depth 6) -Encoding UTF8
+            Move-Item -LiteralPath $tmp -Destination $path -Force
+            # 从 pending-auth.json 移除 stale 条目（按 timestamp|step 键去重，避免对象引用比较）
+            $staleKeys = @(); foreach ($e in $stale) { $staleKeys += ($e.timestamp + "|" + $e.step) }
+            $remaining = @($pending | Where-Object { ($_.ratified -eq $true) -or -not ($staleKeys -contains ($_.timestamp + "|" + $_.step)) })
+            $remJson = if ($remaining.Count -eq 0) { "[]" } elseif ($remaining.Count -eq 1) { "[" + ($remaining | ConvertTo-Json -Depth 4) + "]" } else { $remaining | ConvertTo-Json -Depth 4 }
+            Set-Content -LiteralPath $pendingPath -Value $remJson -Encoding UTF8
+        }
+    }
     $defaultT = 180
     if ($null -ne $cfg -and $null -ne $cfg.defaults.timeout_seconds) { $defaultT = $cfg.defaults.timeout_seconds }
     foreach ($step in $KNOWN_STEPS) {
@@ -266,5 +304,122 @@ if ($AuthorizeStep) {
     exit 0
 }
 
-Write-Output "用法：manage_binding.ps1 -ShowBindings | -Check | -InstallFromRepo | -RecordViolation -Id <id> -By <actor> -Reason <文本> | -AuthorizeStep <step> -Agent <agent> -Authorization <授权原文> | -AuthorizeSteps '{""step1"":""claude"",""step4"":""codex""}' -Authorization <授权原文>"
+# [P-01/P-02/P-05/P-06/P-07/P-11] 基础设施故障应急降级（core-logic §4b 第4项 代码实现 v13.0.39）
+# 单一原子操作：binding-lock.json（绑定改 opencode-sub）+ pending-auth.json（追加 pending 条目）+ docs/violations.log（结构化 infra-failure 条目）
+# pending 状态由独立文件 pending-auth.json 承载，不动 binding-lock schema_version（保持 v2，见 F-P03）。
+# TargetAgent 硬编码 opencode-sub（infra-failover 核心=切原生子代理，不允许切另一外部 CLI）。
+if ($EmergencyInfraFailover) {
+    if ($KNOWN_STEPS -notcontains $Step) { Fail-Cli "用法：-EmergencyInfraFailover -Step <step> -FailureCategory <runner_crash|pipe_deadlock|text_repetition|process_leak|other> -FailureEvidence <证据> -Reason <文本>" }
+    if (-not $FailureCategory) { Fail-Cli "-FailureCategory 必填（runner_crash|pipe_deadlock|text_repetition|process_leak|other）" }
+    # [P-05] 明确拒绝非 infra-failure 类别（超时/认证/模型质量走拆分/循环，不走应急降级）
+    if (@("timeout","auth_failure","model_quality") -contains $FailureCategory) {
+        Fail-Cli "-FailureCategory='$FailureCategory' 不是 infra-failure（超时/认证/模型质量走拆分/循环，core-logic §4b），拒绝应急降级"
+    }
+    if (-not $FailureEvidence) { Fail-Cli "-FailureEvidence 必填（runner EXIT_CODE/stderr/evidence.json 路径等）" }
+    if (-not $Reason -or $Reason.Trim().Length -lt 12) { Fail-Cli "-Reason 必填且≥12字符（infra-failure 根因描述）" }
+
+    $path = Resolve-LockPath
+    $lock = Load-Lock $path
+    $originalAgent = Get-BoundAgent $lock $Step
+    if (-not $originalAgent) { Fail-Cli "step '$Step' 当前无绑定，无法降级" }
+    # [P-01] TargetAgent 硬编码 opencode-sub
+    $targetAgent = "opencode-sub"
+
+    # [P-07] 修改绑定前先校验 step4≠step3 族；先在内存改、后 Test，族冲突即 Fail-Cli exit（磁盘未落盘=fail-closed 安全）
+    Set-BoundAgent $lock $Step $targetAgent
+    Test-BindingsSupported $lock             # opencode-sub 受支持，不会触发
+    Test-Step4FamilyDifferent $lock          # 同族即 exit（binding-lock.json 未写，原绑定保留，fail-closed ✓）
+
+    # [P-02] pending 状态写入独立文件 pending-auth.json（不动 binding-lock schema_version）
+    $pendingPath = Join-Path (Split-Path -Parent $path) "pending-auth.json"
+    $raw = Get-Content -LiteralPath $pendingPath -Encoding UTF8 -Raw -ErrorAction SilentlyContinue
+    $pending = @()
+    if ($raw) { try { $j = $raw | ConvertFrom-Json; if ($j) { $pending = @($j) } } catch { $pending = @() } }
+    $stamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
+    $pending += [pscustomobject]@{
+        step             = $Step
+        original_agent   = $originalAgent
+        target_agent     = $targetAgent
+        timestamp        = $stamp
+        failure_category = $FailureCategory
+        evidence         = $FailureEvidence
+        reason           = $Reason.Trim()
+        ratified         = $false
+    }
+
+    # [P-06] violations.log 结构化 infra-failure 条目（保持人类可读 markdown + 结构化字段）
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+    $logPath = Join-Path $repoRoot "docs\violations.log"
+    if (-not (Test-Path -LiteralPath $logPath)) { Set-Content -LiteralPath $logPath -Value "# Harness Violations Log" -Encoding UTF8 }
+    $vioId = "INFRA-FAILOVER-$stamp"
+    $vioEntry = "`n## $vioId`n`n**时间**：$stamp`n**责任人**：orchestrator（infra-failover）`n**类别**：infra-failure`n**降级目标**：$targetAgent`n**原始绑定**：$originalAgent（$Step）`n**故障分类**：$FailureCategory`n**pending授权**：$pendingPath`n**原因**：$Reason`n---`n"
+
+    # [P-11] 原子事务：备份 3 目标文件 → 依次 Move tmp → 任一步失败则从备份恢复已覆盖文件（严格 all-or-nothing）
+    $lockTmp = $path + ".tmp"; $pendingTmp = $pendingPath + ".tmp"; $logTmp = $logPath + ".tmp"
+    $lockBak = $path + ".bak"; $pendingBak = $pendingPath + ".bak"; $logBak = $logPath + ".bak"
+    $moved = @()
+    try {
+        $lockJson = $lock | ConvertTo-Json -Depth 6
+        Set-Content -LiteralPath $lockTmp -Value $lockJson -Encoding UTF8
+        $pendingJson = if ($pending.Count -eq 0) { "[]" } elseif ($pending.Count -eq 1) { "[" + ($pending | ConvertTo-Json -Depth 4) + "]" } else { $pending | ConvertTo-Json -Depth 4 }
+        Set-Content -LiteralPath $pendingTmp -Value $pendingJson -Encoding UTF8
+        $existing = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Encoding UTF8 -Raw } else { "" }
+        Set-Content -LiteralPath $logTmp -Value ($existing + $vioEntry) -Encoding UTF8
+        # 备份现有目标文件（若存在）
+        if (Test-Path -LiteralPath $pendingPath) { Copy-Item -LiteralPath $pendingPath -Destination $pendingBak -Force }
+        if (Test-Path -LiteralPath $logPath) { Copy-Item -LiteralPath $logPath -Destination $logBak -Force }
+        if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $lockBak -Force }
+        # 依次 Move；记录已 Move 的文件以便回滚
+        Move-Item -LiteralPath $pendingTmp -Destination $pendingPath -Force; $moved += $pendingPath
+        Move-Item -LiteralPath $logTmp -Destination $logPath -Force; $moved += $logPath
+        Move-Item -LiteralPath $lockTmp -Destination $path -Force; $moved += $path
+        # 清理备份
+        foreach ($b in @($lockBak,$pendingBak,$logBak)) { if (Test-Path -LiteralPath $b) { Remove-Item -LiteralPath $b -Force -ErrorAction SilentlyContinue } }
+    } catch {
+        # 回滚：已 Move 的文件从备份恢复（注意反向顺序：binding→log→pending）
+        foreach ($m in @($path,$logPath,$pendingPath)) {
+            if ($moved -contains $m) {
+                $bk = switch ($m) { $path { $lockBak } $logPath { $logBak } $pendingPath { $pendingBak } }
+                if (Test-Path -LiteralPath $bk) { Copy-Item -LiteralPath $bk -Destination $m -Force }
+            }
+        }
+        foreach ($t in @($lockTmp,$pendingTmp,$logTmp,$lockBak,$pendingBak,$logBak)) { if (Test-Path -LiteralPath $t) { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } }
+        Fail-Cli "应急降级原子写失败，已回滚。错误：$_"
+    }
+
+    Write-Output "EMERGENCY_FAILOVER_APPLIED step=$Step original=$originalAgent target=$targetAgent category=$FailureCategory"
+    Write-Output "PENDING_AUTH=$pendingPath (ratify via -AuthorizeStep $Step -Agent $originalAgent -Authorization <用户授权原文≥12字符>，或 session 结束 -CleanupPendingFailovers 回退)"
+    Write-Output "VIOLATION_RECORDED=$logPath (id=$vioId)"
+    Write-Output $lockJson
+    exit 0
+}
+
+# [P-04] session 结束清理：ratified 保留记录、未 ratified 回退绑定到 original_agent
+if ($CleanupPendingFailovers) {
+    $path = Resolve-LockPath
+    $pendingPath = Join-Path (Split-Path -Parent $path) "pending-auth.json"
+    if (-not (Test-Path -LiteralPath $pendingPath)) { Write-Output "CLEANUP_PENDING_NOOP=no pending-auth.json"; exit 0 }
+    $raw = Get-Content -LiteralPath $pendingPath -Encoding UTF8 -Raw -ErrorAction SilentlyContinue
+    $pending = @(); if ($raw) { try { $j = $raw | ConvertFrom-Json; if ($j) { $pending = @($j) } } catch { $pending = @() } }
+    $reverted = 0; $ratified = 0
+    foreach ($e in $pending) {
+        if ($e.ratified -eq $true) { $ratified++; continue }
+        $lock = Load-Lock $path
+        if ((Get-BoundAgent $lock $e.step) -eq $e.target_agent) {
+            Set-BoundAgent $lock $e.step $e.original_agent
+            Test-BindingsSupported $lock
+            Test-Step4FamilyDifferent $lock
+            $tmp = $path + ".tmp"
+            Set-Content -LiteralPath $tmp -Value ($lock | ConvertTo-Json -Depth 6) -Encoding UTF8
+            Move-Item -LiteralPath $tmp -Destination $path -Force
+            $reverted++
+        }
+    }
+    Set-Content -LiteralPath $pendingPath -Value "[]" -Encoding UTF8
+    Write-Output "CLEANUP_PENDING_DONE reverted=$reverted ratified=$ratified"
+    exit 0
+}
+
+Write-Output "用法：manage_binding.ps1 -ShowBindings | -Check | -InstallFromRepo | -RecordViolation -Id <id> -By <actor> -Reason <文本> | -AuthorizeStep <step> -Agent <agent> -Authorization <授权原文> | -AuthorizeSteps '{""step1"":""claude"",""step4"":""codex""}' -Authorization <授权原文> | -EmergencyInfraFailover -Step <step> -FailureCategory <runner_crash|pipe_deadlock|text_repetition|process_leak|other> -FailureEvidence <证据> -Reason <文本> | -CleanupPendingFailovers"
 exit 1

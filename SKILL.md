@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.36
+version: 13.0.39
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.36 — OpenCode Claude Windows 超时根治)
+# Harness 4-Step Method (v13.0.39 — p10-infra-failover code-level)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,14 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.39 (2026-08-25)
+
+- **P-10 代码级实现（H-7 infra-failover，三平台同步）**：opencode/dsh `manage_binding.ps1` 新增 `-EmergencyInfraFailover`（应急降级到原生子代理 opencode-sub/dsh-sub，TargetAgent 硬编码）+ `-CleanupPendingFailovers`（session 结束 ratify/回退）+ `-Check` stale pending 检测（>24h 自动回退+警告）；pending 状态存独立 `pending-auth.json`（不动 binding-lock schema_version，opencode 保持 v2、DSH 保持 v1）；`-FailureCategory` 枚举（runner_crash/pipe_deadlock/text_repetition/process_leak/other，拒绝 timeout/auth_failure/model_quality）；violations.log 结构化 infra-failure 条目（类别/降级目标/原始绑定/故障分类/pending授权路径）；`Test-Step4FamilyDifferent` 前置校验同族即 fail-closed 拒绝；3 文件原子写（binding-lock+pending-auth+violations，tmp+Move，任一失败回滚）；`opencode/scripts/run_step.ps1 Invoke-TaskWithSplit` 在 error-return 前检测 `EXIT_CODE=13`/stdout `INFRA_FAILURE:<category>` 信号触发降级+重试；`shared/core-logic.md §4b` 第4项「代码 deferred」替换为实际 flag 引用。版本 13.0.38 → 13.0.39。
+
+### v13.0.38 (2026-08-25)
+
+- **harness-self-fix-20260825（三平台同步）**：opencode 适配层修复 prechunk 对 opencode-sub 误触发+分片数被 MaxSplitDepth 误封顶（F-P01/P02）、ANTHROPIC_* 条件化保留本地代理凭据（F-P04）、拆分壁死后语义重拆 handoff 信号（F-P06/P08 + shared/core-logic.md §6.1）、外层 timeout 提至 1800000ms + 总预算守卫（F-P07）、runner 启动即写 running evidence（F-P09）、core-logic §4b 基础设施故障降级类别 doc-only（F-P10，代码 deferred）、DSH step4 guard 移除 exitCode==0 限制（F-P13）；文档统一 `pwsh`→`powershell.exe`（PS 5.1，F-P05）、新增 Pitfall：v13.0.37 ArgumentList 废棄（F-P03）+ bash 内联 PS `$_` 陷阱（F-P12）；清理游离 `nul` 文件 + .gitignore（F-P15）。三平台版本 13.0.36 → 13.0.38。
 
 ### v13.0.36 (2026-08-24)
 
