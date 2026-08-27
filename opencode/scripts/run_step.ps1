@@ -248,45 +248,41 @@ function Invoke-TaskWithSplit {
             $r.ExitCode = 1   # 统一为 exit 1 + INFRA_FAILURE 信号，进入已有检测块
             $r.Output += "INFRA_FAILURE:empty_output"
         }
-        # [P-09] 基础设施故障应急降级检测（core-logic §4b 第4项，设计决策 #8）
-        # 信号：EXIT_CODE=13，或 EXIT_CODE=1 + stdout 'INFRA_FAILURE:<category>' 标记
-        # 命中且未降级过 → 调 manage_binding.ps1 -EmergencyInfraFailover → 重读 binding → 重置 attempt 重试
+        # [P-09/v13.0.42] 基础设施故障检测（不自动降级）
+        # v13.0.42 硬不变规则：CLI 不可用（exit 13 / exit -1 / INFRA_FAILURE:*）一律**不自动改绑**。
+        #   - exit 13（claude "Failed to parse JSON"，P-18）：多为上游/代理/凭证池瞬时问题，
+        #     本地代理（claude_credential_proxy.py）已在配额/限流时自动轮换凭证重试，因此
+        #     正确动作是**同绑定重试**，而非切到别的 backend。
+        #   - 重试仍失败 → 输出 INFRA_FAILURE 信号并 exit 13，让编排层 STOP 报告用户；
+        #     编排层必须等用户当轮显式授权才能降级（-EmergencyInfraFailover 仅由用户授权触发）。
         $infraCat = $null
+        $retryable = $false
         if ($r.ExitCode -eq 13) {
-            $infraCat = "other"
+            $infraCat = "claude_json_parse"
+            $retryable = $true
         } elseif ($r.ExitCode -eq 1) {
             $m = ($r.Output | Select-String -Pattern '^INFRA_FAILURE:(runner_crash|pipe_deadlock|text_repetition|process_leak|empty_output|other)\s*$' | Select-Object -First 1)
             if ($m) { $infraCat = $m.Matches[0].Groups[1].Value }
+            # 纯 infra 类别（runner 自身崩溃/死锁/泄漏/空输出）也仅重试，不自动降级（v13.0.42）
+            $retryable = $true
         }
-        if ($infraCat -and -not $infraFailoverApplied -and $script:infraFailoverAttempts -lt $MaxFailoverAttempts) {
+        if ($infraCat -and $retryable -and $script:infraFailoverAttempts -lt $MaxFailoverAttempts) {
+            # [v13.0.42] 同绑定重试（不调 -EmergencyInfraFailover）：本地代理会在配额/限流时轮换凭证，
+            # 重试命中新凭证即可恢复，无需改绑。记录 attempts 供 evidence 追溯。
             $script:infraFailoverAttempts++
-            $evPath = Join-Path $curOut "evidence.json"
-            $mbScript = Join-Path $PSScriptRoot "manage_binding.ps1"
-            $reasonStr = "runner infra-failure (exit=$($r.ExitCode), category=$infraCat) detected by run_step.ps1 Invoke-TaskWithSplit"
-            # & 调用（非 dot-source）：manage_binding 的 exit 仅作用于被调脚本，$LASTEXITCODE 回传
-            $taskId = Split-Path -Leaf $WorkspaceDir
-            $mbOut = & $mbScript -EmergencyInfraFailover -Step $Step -FailureCategory $infraCat -FailureEvidence "exit=$($r.ExitCode); evidence=$evPath" -Reason $reasonStr -AcquireLock $taskId 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                # [F-02] 降级被拒（候选耗尽/约束不满足）：不静默 return；记录 attempts 并重试，达上限 fail-closed exit 5
-                Write-Output "INFRA_FAILOVER_REJECTED step=$Step category=$infraCat attempt=$($script:infraFailoverAttempts)/$MaxFailoverAttempts (manage_binding exit=$LASTEXITCODE)"
-                $rejBrief = (@($mbOut) | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join '; '
-                $script:infraFailoverAttemptsLog += ("attempt=$($script:infraFailoverAttempts) category=$infraCat exit=$LASTEXITCODE detail=$rejBrief")
-                if ($script:infraFailoverAttempts -ge $MaxFailoverAttempts) {
-                    Merge-Evidence $curOut 5 "blocked_no_compatible_failover" $att $splitParent
-                    Write-TaskState 5 "blocked_no_compatible_failover"
-                    Write-Output "EXIT_CODE=5 status=blocked_no_compatible_failover (no compatible failover after $MaxFailoverAttempts attempts)"
-                    exit 5
-                }
-                continue   # 重试降级（manage_binding 候选按序再试）
+            Write-Output ("INFRA_RETRY step={0} category={1} attempt={2}/{3}（同绑定重试，v13.0.42 不自动降级；proxy 自动轮换凭证）" -f $Step, $infraCat, $script:infraFailoverAttempts, $MaxFailoverAttempts)
+            $script:infraFailoverAttemptsLog += ("attempt=$($script:infraFailoverAttempts) category=$infraCat exit=$($r.ExitCode)")
+            if ($script:infraFailoverAttempts -ge $MaxFailoverAttempts) {
+                # 重试耗尽 → 输出 INFRA_FAILURE 信号 + exit 13，编排层 STOP 报告用户（不降级）
+                $r.Output += ("INFRA_FAILURE:" + $infraCat)
+                Merge-Evidence $curOut 13 "infra_retry_exhausted" $att $splitParent
+                Write-TaskState 13 "infra_retry_exhausted"
+                Write-Output ("INFRA_FAILURE:{0}" -f $infraCat)
+                Write-Output "INFRA_FAILURE_DETAIL: 同绑定重试 $MaxFailoverAttempts 次仍失败；按 v13.0.42 硬不变规则不自动降级——编排层须 STOP 并向用户报告，等用户显式授权后才能降级"
+                Write-Output "EXIT_CODE=13"
+                exit 13
             }
-            $infraFailoverApplied = $true
-            Write-Output "INFRA_FAILOVER_APPLIED step=$Step category=$infraCat → retry with new binding"
-            # 重读 binding（failover 已把 $Step 改为首个兼容候选）
-            $lock2 = Get-Content -LiteralPath $lockFile -Encoding UTF8 -Raw | ConvertFrom-Json
-            $script:b = $lock2.bindings.$Step   # 覆盖脚本作用域 $b（Invoke-Runner 读同一 $b）
-            Merge-Evidence $curOut 13 "infra_failover_applied" $att $splitParent
-            $attempt = 0   # 重置 attempt 计数；for 循环 ++→1 重跑（opencode-sub 即返回 99 handoff，无再触发风险）
-            continue
+            continue   # 同绑定重试
         }
         if ($r.ExitCode -ne -2) {
             Merge-Evidence $curOut $r.ExitCode "error" $att $splitParent
