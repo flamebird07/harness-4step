@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.41
+version: 13.0.42
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.41 — F-01R3 lock fix)
+# Harness 4-Step Method (v13.0.42 — 降级禁令硬不变规则)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.42 (2026-08-27)
+
+- **降级禁令硬不变规则固化（凌驾所有其他规则，三平台同步）**：CLI 不可用时（exit -1、exit 13、`API Error: Failed to parse JSON`、空输出、命令未找到、认证 401、沙箱拦子进程、`candidate not supported` 等）一律 STOP 并向用户报告原始错误，**不得自动改绑到另一个 backend**。orchestrator 必须等用户当轮明确授权（"降级到 X"或"用 X 继续"）才能调 `manage_binding.ps1 -AuthorizeStep/Steps`，并在 `authorization_log` 追加 `agent=X, authorization=<用户原话>`。无用户原话 = 无授权 = 不降级。即使 `binding-lock.json` 设了 `constraints.disable_auto_degrade=false`，orchestrator 仍须每轮重新获得用户授权。`-EmergencyInfraFailover` 即使代码级可用，也必须满足上述用户授权前提；否则按 `docs/violations.log` 类别 `unauthorized_degrade` 记违规。文档固化位置：`shared/core-logic.md §4（v13.0.42 硬不变规则段）` + `opencode/SKILL.md` / `dsh/SKILL.md` 硬性规则首条 + `opencode/agents/harness-orchestrator.md` 独立段 + `opencode/scripts/manage_binding.ps1` 文件头注释。
 
 ### v13.0.41 (2026-08-27)
 

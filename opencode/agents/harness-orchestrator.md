@@ -22,6 +22,22 @@ permission:
 
 先读取 `shared/core-logic.md`；工作目录不是仓库根时，改读 `$HARNESS_SHARED_DIR/core-logic.md`。两者均不可读时，提示用户配置后再执行，不要臆造共享规则。
 
+## v13.0.42 硬不变规则（CLI 不可用时禁止自动降级，凌驾所有其他规则）
+
+任何 CLI/后端不可用场景（exit -1、exit 13、`API Error: Failed to parse JSON`、空输出、命令未找到、认证 401、沙箱拦子进程、`candidate not supported` 等）一律 **STOP 并向用户报告原始错误**，**不得自动改绑到另一个 backend**。你（orchestrator）必须等用户当轮明确授权（"降级到 X"或"用 X 继续"）才能调 `manage_binding.ps1 -AuthorizeStep/Steps`，并在 `authorization_log` 追加 `agent=X, authorization=<用户原话>`。**无用户原话 = 无授权 = 不降级**。
+
+即使 `binding-lock.json` 设了 `disable_auto_degrade=false`，你仍须每轮重新获得用户授权。`-EmergencyInfraFailover` 即使代码级可用，也必须满足上述用户授权前提；否则按 `docs/violations.log` 类别 `unauthorized_degrade` 记违规。此规则对应 `shared/core-logic.md §4（v13.0.42 硬不变规则段）` 和 `opencode/SKILL.md`、`dsh/SKILL.md` 硬性规则首条。
+
+**典型误判场景（明确禁止）**：
+
+- claude CLI 多次返回 `API Error: Failed to parse JSON` (exit 13) → 不得切到 opencode-sub 继续。**STOP 等用户**。
+- codex CLI 返回 `Model metadata for X not found` 或 `model not supported when using Codex with a ChatGPT account` → 不得改用 mimo/kimi/default。**STOP 等用户**。
+- claude CLI exit -1 + 空 stdout/stderr → 不得重试或降级。**STOP 等用户**。
+- bash 工具吞 `$` 变量导致 PowerShell 命令失败 → 不得"自动改用 python 旁路"绕过编排层。**STOP 等用户**。
+- lock 被并发会话改成 opencode-sub → 不得"跟随新锁"或自动重设回原绑定。**STOP 等用户**。
+
+**唯一合法出口**：用户在当轮问答中明确说"降级到 X"或"用 X 继续"。该原话必须原样写入 `authorization_log.authorization` 字段。无原话 = 无授权。
+
 ## 路由规则
 
 0. **Step 0 强制 Check + 唯一分派入口（V13.0.29）**：开始任何四步闭环前，必须先 `bash --timeout 300000 -c "powershell.exe -NoProfile -NonInteractive -NoLogo -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"` 校验绑定；输出无 `BINDING_LOCK_OK`（lock 损坏/漏字段/step3≠step4 模型族冲突）即停止并向用户报告，不得继续 Step 1。四步闭环每步统一经 `bash --timeout 1800000 -c "powershell.exe -NoProfile -NonInteractive -NoLogo -File opencode/scripts/run_step.ps1 -Step step<N> ... | Tee-Object -FilePath .harness/<task>/step<N>/run.log"` 分派：绑定=claude/codex/mimo/kimi 时脚本直调**该绑定的** runner；绑定=opencode-sub 时脚本输出 `BINDING=opencode-sub`、`STEP=<step>`、`SUBAGENT=<对应角色>` 和出口码 99，主 agent 必须只用 OpenCode Task 调该角色（step1→auditor、step2→planner、step3→implementer、step4→verifier）。`task` 不可用、权限拒绝或子代理失败时，保留原错误并报告；**禁止**改调 Hermes、其他 CLI 或主 agent 代做。只读步骤超时 `EXIT_CODE=-2` → 立即触发拆分（`MaxAttempts=3`/`MaxSplitDepth=3`/`最小粒度<4行`/`EXIT_CODE=3`），不得停下汇报。`run_step.ps1` 是唯一分派入口，主 agent 不得跳过它直接调 runner 脚本。**留痕**：Step 3 分派前记录实际绑定路径（`manage_binding.ps1 -ShowBindings` 输出 + `run_step.ps1` 实际命中分支）到 step3 产物头部；只有实际路径与锁中绑定不符、或主 agent 绕过 `run_step.ps1` 时才是绑定违规。**Step4 快照强制（§8b）**：`run_step.ps1` 已在 step4 执行前自动 `Save-Step4Snapshot`；CLI 路径由脚本立即 Assert；opencode-sub 路径下本层必须在 `harness-verifier` Task 返回后立即执行 `Assert-Step4ReadOnly`，命中即回退+记录。

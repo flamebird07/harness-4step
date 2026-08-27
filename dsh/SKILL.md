@@ -1,10 +1,10 @@
 ---
 name: harness-4step
 description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（vision-reviewer：mimo CLI + 视觉模型看图，shared/core-logic.md §11，DSH 与 opencode 支持、Hermes 自带视觉不触发）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.41
+version: 13.0.42
 ---
 
-# 四步法 Harness（DeepSeek Harness 适配层 v13.0.41 — DSH subagent 为主 + CLI 可选）
+# 四步法 Harness（DeepSeek Harness 适配层 v13.0.42 — DSH subagent 为主 + CLI 可选；降级禁令硬不变规则）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 DSH 落地：把共享逻辑映射到 DeepSeek Harness 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -98,6 +98,7 @@ bash --timeout 300000 -c "powershell.exe -File opencode/scripts/run_kimi_step4.p
 
 ## 硬性规则（主 agent）
 
+- **CLI 不可用时禁止自动降级（v13.0.42 硬不变规则，凌驾所有其他规则）**：任何 CLI/后端不可用场景（exit -1、exit 13、`API Error: Failed to parse JSON`、空输出、命令未找到、认证 401、沙箱拦子进程、`candidate not supported` 等）一律 **STOP 并向用户报告原始错误**，**不得自动改绑到另一个 backend**。orchestrator 必须等用户当轮明确授权（"降级到 X"或"用 X 继续"）才能调 `dsh/scripts/manage_binding.ps1 -AuthorizeStep/Steps`，并在 `authorization_log` 追加 `agent=X, authorization=<用户原话>`。**无用户原话 = 无授权 = 不降级**。即使 `binding-lock.json` 设了 `disable_auto_degrade=false`，orchestrator 仍须每轮重新获得用户授权。`-EmergencyInfraFailover` 即使代码级可用，也必须满足上述用户授权前提；否则按 `docs/violations.log` 类别 `unauthorized_degrade` 记违规。此规则对应 `shared/core-logic.md §4（v13.0.42 硬不变规则段）`。
 - 同一修复包内每步等上一 subagent 返回后才进下一步；不可跳步。独立的只读侦察、审查包和文件范围不重叠的完整修复包可以并行（并行侦察用 `run_in_background: true`）。
 - 主 agent 不得自己分析根因、写方案、改代码
 - 传参只传原始问题/产物，禁止夹带倾向性结论
@@ -148,6 +149,10 @@ bash --timeout 300000 -c "powershell.exe -File opencode/scripts/run_kimi_step4.p
 5. 视觉审查（shared/core-logic.md §11）依赖共享 runner `opencode/scripts/run_vision_review.ps1`：从仓库根目录运行时用相对路径 `opencode/scripts/run_vision_review.ps1`（与 CLI runner 共享模式一致）；单独复制脚本时一并复制该文件即可（mimo CLI 需已装并登录，见 `references/mimo-cli-login.md`）
 
 ## 版本历史
+
+### v13.0.42 (2026-08-27)
+
+- **降级禁令硬不变规则固化**：CLI 不可用时一律 STOP + 报告原始错误，**不得自动改绑到另一个 backend**。orchestrator 必须等用户当轮明确授权才能降级；无用户原话 = 无授权 = 不降级。即使用户事先设了 `constraints.disable_auto_degrade=false`，orchestrator 仍须每轮重新获得用户授权。`-EmergencyInfraFailover` 即使代码级可用也必须满足用户授权前提，否则按 `violations.log` 类别 `unauthorized_degrade` 记违规。详见 `shared/core-logic.md §4 v13.0.42 段` + `opencode/agents/harness-orchestrator.md` 独立段 + `opencode/scripts/manage_binding.ps1` 文件头注释 + 本文件"硬性规则"首条。
 
 ### v13.0.41 (2026-08-27)
 

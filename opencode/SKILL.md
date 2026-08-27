@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.41
+version: 13.0.42
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.41
+# 四步法 Harness（opencode 适配层）v13.0.42 — 降级禁令硬不变规则
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -157,12 +157,13 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manag
 
 ## 硬性规则（主 agent）
 
+- **CLI 不可用时禁止自动降级（v13.0.42 硬不变规则，凌驾所有其他规则）**：任何 CLI/后端不可用场景（exit -1、exit 13、`API Error: Failed to parse JSON`、空输出、命令未找到、认证 401、沙箱拦子进程、`candidate not supported` 等）一律 **STOP 并向用户报告原始错误**，**不得自动改绑到另一个 backend**。orchestrator 必须等用户当轮明确授权（"降级到 X"或"用 X 继续"）才能调 `manage_binding.ps1 -AuthorizeStep/Steps`，并在 `authorization_log` 追加 `agent=X, authorization=<用户原话>`。**无用户原话 = 无授权 = 不降级**。即使 `binding-lock.json` 设了 `disable_auto_degrade=false`，orchestrator 仍须每轮重新获得用户授权。`-EmergencyInfraFailover` 即使代码级可用，也必须满足上述用户授权前提；否则按 `violations.log` 类别 `unauthorized_degrade` 记违规。此规则对应 `shared/core-logic.md §4（v13.0.42 硬不变规则段）`。
 - 每步等上一 subagent 返回后才进下一步；不可并行、不可跳步
 - 主 agent 不得自己分析根因、写方案、改代码
 - 传参只传原始问题/产物，禁止夹带倾向性结论
 - Step 3 完成后必须立即进入 Step 4，不得中途停下汇报当"完成"
 - 不得绕过 `run_step.ps1` 直接调用 `Task`、`harness-*` subagent 或 runner。`opencode-sub` 可由任一步的锁显式指定；脚本以 99 仅移交对应角色（step1→auditor、step2→planner、step3→implementer、step4→verifier），不得换用其他 CLI。
-- 合法 `opencode-sub` 的 `EXIT_CODE=99` 是 Step 0 校验后的 orchestrator 移交信号。`task` 不可用、权限拒绝或子代理失败时，保留错误并报告；不得将失败降级为 Hermes、其他 CLI 或主代理代做。Step 4 返回后仍须执行既定 evidence 写入和只读快照断言。
+- 合法 `opencode-sub` 的 `EXIT_CODE=99` 是 Step 0 校验后的 orchestrator 移交信号。`task` 不可用、权限拒绝或子代理失败时，保留错误并报告；**不得将失败降级为 Hermes、其他 CLI 或主代理代做**（与上述 v13.0.42 硬规则一致：仍须用户当轮显式授权）。Step 4 返回后仍须执行既定 evidence 写入和只读快照断言。
 - 每次 CLI、超时、普通失败、拆分壁垒和合法 99 移交都必须留下同一 schema 的 `evidence.json`；99 的状态为 `handoff_pending`，不是 evidence 豁免。
 - 写工具（patch/write_file 等）被 gate 拦截时，禁止换用 python heredoc / `python -c` / `node -e` / shell 重定向直写、直调 `run_cli.py` 或 runner/subagent 等任何等价路径完成同一写入（shared/core-logic.md §8 类别 F）；唯一合法出口是走编排层流程或向用户报告。
 - todo 同步纪律（强制，P-05）：每步经 run_step.ps1 分派前把对应 todo 项标为 `in_progress`；分派返回后立即更新——成功标 `completed` 并附产物路径 `.harness/<task>/step<N>/`，失败/拆分标 `blocked` 并附原因 + evidence 路径，`EXIT_CODE=99`（opencode-sub 移交）保持 `in_progress` 待子代理返回后收尾。断线重连先读 `.harness/<task>/task-state.json`（F-06）恢复各步状态，再据此重建 todo 面板。
@@ -174,6 +175,10 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manag
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.42 (2026-08-27)
+
+- **降级禁令硬不变规则固化**：CLI 不可用时一律 STOP + 报告原始错误，**不得自动改绑到另一个 backend**。orchestrator 必须等用户当轮明确授权才能降级；无用户原话 = 无授权 = 不降级。即使用户事先设了 `constraints.disable_auto_degrade=false`，orchestrator 仍须每轮重新获得用户授权。`-EmergencyInfraFailover` 即使代码级可用也必须满足用户授权前提，否则按 `violations.log` 类别 `unauthorized_degrade` 记违规。详见 `shared/core-logic.md §4 v13.0.42 段` + `opencode/agents/harness-orchestrator.md` 独立段 + `opencode/scripts/manage_binding.ps1` 文件头注释 + 本文件"硬性规则"首条。
 
 ### v13.0.41 (2026-08-27)
 

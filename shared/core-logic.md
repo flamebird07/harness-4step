@@ -59,6 +59,15 @@ Step 2 方案的每个 F 项必须标注三态之一，Step 3 严格按态执行
 
 绑定变更必须是**用户显式授权**，禁止执行者/审查者自行改绑定来绕过失败。
 
+**v13.0.42 硬不变规则（CLI 不可用时禁止自动降级）**：
+- 任何 CLI/后端不可用场景（exit -1、exit 13、API Error、空输出、命令未找到、认证 401、沙箱拦子进程等）一律 **STOP 并向用户报告**，**不得自动改绑到另一个 backend**。
+- 自动改绑是 orchestrator 自作主张的违规行为（v13.0.9#5 禁止的绕过场景），即使降级目标在 `CandidateAgents` 列表内、即使有 `disable_auto_degrade=false` 配置，**也不得**未经用户当轮显式回复授权就触发。
+- 唯一例外：当用户**当轮问答**明确说"降级到 X"或"用 X 继续"时，orchestrator 才有权调 `manage_binding.ps1 -AuthorizeStep/Steps`，并在 `authorization_log` 追加一条 `agent=X, authorization=<用户原话>`。无用户原话 = 无授权 = 不降级。
+- `-EmergencyInfraFailover`（H-7 文档降级）即使代码级可用，也必须满足上述用户授权前提才被 orchestrator 调用；否则视为违规（violations.log 类别=unauthorized_degrade）。
+- 这条规则**凌驾** §4b 第 3/4 项的"降级换 CLI"和"基础设施故障应急降级"——即使用户事先在 `binding-lock.json` 设了 `disable_auto_degrade=false`，orchestrator 仍须每轮重新获得用户授权才能触发。
+
+## 4b. 只读步骤（step1/2/4）失败处置优先级
+
 ## 4b. 只读步骤（step1/2/4）失败处置优先级
 
 同一只读步骤失败/超时时，处置顺序固定为：

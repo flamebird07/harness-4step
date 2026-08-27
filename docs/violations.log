@@ -33,3 +33,29 @@
 **原因**：runner infra-failure (exit=13, category=other) detected by run_step.ps1 Invoke-TaskWithSplit
 ---
 
+
+## INFRA-FAILOVER-2026-08-27T20:41:50+08:00
+
+**时间**：2026-08-27T20:41:50+08:00
+**责任人**：orchestrator（infra-failover）
+**类别**：infra-failure
+**降级目标**：opencode-sub
+**原始绑定**：claude（step1）
+**故障分类**：other
+**pending授权**：C:\Users\Administrator\.config\opencode\harness\pending-auth.json
+**原因**：runner infra-failure (exit=13, category=other) detected by run_step.ps1 Invoke-TaskWithSplit
+---
+
+
+## INFRA-FAILOVER-2026-08-27T20:42:54+08:00
+
+**时间**：2026-08-27T20:42:54+08:00
+**责任人**：orchestrator（infra-failover）
+**类别**：infra-failure
+**降级目标**：opencode-sub
+**原始绑定**：claude（step1）
+**故障分类**：other
+**pending授权**：C:\Users\Administrator\.config\opencode\harness\pending-auth.json
+**原因**：runner infra-failure (exit=13, category=other) detected by run_step.ps1 Invoke-TaskWithSplit
+---
+

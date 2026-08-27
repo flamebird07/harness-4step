@@ -3,6 +3,14 @@
 opencode 适配层绑定管理：加载/校验/展示 binding-lock.json，仅允许经显式用户授权改写绑定
 （写入 authorization_log，tmp 原子替换）。对齐 Hermes 端 binding-lock.json + authorize_binding_change()。
 
+v13.0.42 硬不变规则（凌驾 -EmergencyInfraFailover / -AuthorizeStep 自身逻辑）：
+  - CLI 不可用（exit -1、exit 13、空输出、认证 401、command not found 等）一律不得自动改绑到另一个 backend。
+  - -EmergencyInfraFailover 即使代码级可用，orchestrator 也必须先获得用户当轮显式授权才能调用；否则按
+    docs/violations.log 类别 "unauthorized_degrade" 记违规。
+  - 用户的授权原话必须原样写入 authorization_log.authorization 字段，无原话 = 无授权。
+  - 即使用户事先在 binding-lock.json 设了 constraints.disable_auto_degrade=false，orchestrator 仍须每轮重新授权。
+  - 详细规则见 shared/core-logic.md §4（v13.0.42 硬不变规则段）+ opencode/SKILL.md / dsh/SKILL.md / harness-orchestrator.md 硬性规则首条。
+
 V10 调用约定：bash 调本脚本及 run_step.ps1 必须 timeout=300000 + | Tee-Object -FilePath <OutDir>/run.log 实时透传，否则 EXIT_CODE/BINDING_LOCK_OK 因 120s 截断丢失
 用法（bash 侧）：
   bash --timeout 300000 -c "powershell.exe -NoProfile -NonInteractive -NoLogo -File manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"
