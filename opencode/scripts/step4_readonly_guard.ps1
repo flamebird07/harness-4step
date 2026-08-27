@@ -52,7 +52,13 @@ function Save-Step4Snapshot {
         foreach ($s in $segs) { if ($exclude -contains $s) { $skip = $true; break } }
         if ($skip) { continue }
         if ($outRel -and ($rel -eq $outRel -or $rel.StartsWith($outRel + '\'))) { continue }
-        $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+        # [F-NEW-02] Windows 保留设备名/虚项防护：Get-ChildItem -Force 在某些 FS（如 NTFS 流/DOS device stub）会返回
+        # 名为 nul/con/prn/aux/com1..9/lpt1..9 的伪文件，但 Test-Path -LiteralPath 报 not found 或 Get-FileHash 抛
+        # PathNotFound。两次测试即可识别——任一失败则跳过，避免 fail-closed 卡死 step4。
+        if (-not (Test-Path -LiteralPath $f.FullName)) { continue }
+        try {
+            $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+        } catch { continue }
         # P2：先 Copy-Item 成功，再把条目写入 manifest，消除「manifest 有条目而备份缺文件」窗口。
         $dst = Join-Path $snapDir $rel
         $d = Split-Path -Parent $dst
@@ -91,6 +97,8 @@ function Assert-Step4ReadOnly {
         foreach ($s in $segs) { if ($exclude -contains $s) { $skip = $true; break } }
         if ($skip) { continue }
         if ($outRel -and ($rel -eq $outRel -or $rel.StartsWith($outRel + '\'))) { continue }
+        # [F-NEW-02] Windows 保留设备名/虚项防护（与 Save 同源，保证双文件一致）
+        if (-not (Test-Path -LiteralPath $f.FullName)) { continue }
         if (-not $known.Contains($rel)) { $changed.Add($rel) }
     }
     if ($changed.Count -gt 0) {

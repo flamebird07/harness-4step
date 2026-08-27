@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.40
+version: 13.0.41
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.40
+# 四步法 Harness（opencode 适配层）v13.0.41
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -165,6 +165,7 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manag
 - 合法 `opencode-sub` 的 `EXIT_CODE=99` 是 Step 0 校验后的 orchestrator 移交信号。`task` 不可用、权限拒绝或子代理失败时，保留错误并报告；不得将失败降级为 Hermes、其他 CLI 或主代理代做。Step 4 返回后仍须执行既定 evidence 写入和只读快照断言。
 - 每次 CLI、超时、普通失败、拆分壁垒和合法 99 移交都必须留下同一 schema 的 `evidence.json`；99 的状态为 `handoff_pending`，不是 evidence 豁免。
 - 写工具（patch/write_file 等）被 gate 拦截时，禁止换用 python heredoc / `python -c` / `node -e` / shell 重定向直写、直调 `run_cli.py` 或 runner/subagent 等任何等价路径完成同一写入（shared/core-logic.md §8 类别 F）；唯一合法出口是走编排层流程或向用户报告。
+- todo 同步纪律（强制，P-05）：每步经 run_step.ps1 分派前把对应 todo 项标为 `in_progress`；分派返回后立即更新——成功标 `completed` 并附产物路径 `.harness/<task>/step<N>/`，失败/拆分标 `blocked` 并附原因 + evidence 路径，`EXIT_CODE=99`（opencode-sub 移交）保持 `in_progress` 待子代理返回后收尾。断线重连先读 `.harness/<task>/task-state.json`（F-06）恢复各步状态，再据此重建 todo 面板。
 
 ## 违规处理
 
@@ -173,6 +174,10 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manag
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.41 (2026-08-27)
+
+- **harness-self-fix-20260826r3（F-01R3 锁修复 + P-01..P-08 全部 F）**：并发锁根因修复——`manage_binding.ps1` 互斥句柄从数据文件改挂 sidecar `<lock>.mutex`（选项 C），数据文件永不持有 → `Move-Item` 覆盖不再被自身句柄阻塞（P-01/P-02 消除），新增 `Release-LockHandle` 幂等助手（F-01）；`-InstallFromRepo` 内联 Move 改为统一出口 `Write-LockAtomic`（F-02）；指纹比对随选项 C 复活（数据文件可重开），`-CleanupPendingFailovers` 循环内每轮刷新 `$fpNow` 防多条目假 fail-closed（F-03）；`-EmergencyInfraFailover` 补 `$fp0`+`Assert-LockWriteAvailable`+`Set-LastWriter`+catch 释放，`run_step.ps1` 调降级传 `-AcquireLock $taskId`（F-04）；todo 同步纪律强制（SKILL 硬性规则 + orchestrator 强制更新节 + todo 工具白名单 + 新增 `scripts/harness-status.ps1` 只读汇总）（F-05）；`run_step.ps1` 新增 `Write-TaskState`（PS 5.1 兼容）写 `.harness/<task>/task-state.json` + 5 出口调用（F-06）；prechunk 阈值放宽 `$prechunkLines=80`/`$prechunkTrigger=120`/`$chunkCharCap=15000`（F-07）；`harness-implementer.md` 新增「三态执行规则（强制，每轮重述）」独立段（F-08）。版本 13.0.40 → 13.0.41。
 
 ### v13.0.40 (2026-08-25)
 

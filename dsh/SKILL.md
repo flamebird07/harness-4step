@@ -1,10 +1,10 @@
 ---
 name: harness-4step
 description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（vision-reviewer：mimo CLI + 视觉模型看图，shared/core-logic.md §11，DSH 与 opencode 支持、Hermes 自带视觉不触发）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.40
+version: 13.0.41
 ---
 
-# 四步法 Harness（DeepSeek Harness 适配层 v13.0.40 — DSH subagent 为主 + CLI 可选）
+# 四步法 Harness（DeepSeek Harness 适配层 v13.0.41 — DSH subagent 为主 + CLI 可选）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 DSH 落地：把共享逻辑映射到 DeepSeek Harness 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -148,6 +148,10 @@ bash --timeout 300000 -c "powershell.exe -File opencode/scripts/run_kimi_step4.p
 5. 视觉审查（shared/core-logic.md §11）依赖共享 runner `opencode/scripts/run_vision_review.ps1`：从仓库根目录运行时用相对路径 `opencode/scripts/run_vision_review.ps1`（与 CLI runner 共享模式一致）；单独复制脚本时一并复制该文件即可（mimo CLI 需已装并登录，见 `references/mimo-cli-login.md`）
 
 ## 版本历史
+
+### v13.0.41 (2026-08-27)
+
+- **harness-self-fix-20260826r3（F-01R3 锁修复 + P-01..P-08 全部 F，三平台同步）**：opencode 适配层并发锁根因修复——互斥句柄从数据文件改挂 sidecar `<lock>.mutex`（选项 C），数据文件永不持有 → `Move-Item` 覆盖不再被自身句柄阻塞（P-01/P-02 消除），新增 `Release-LockHandle` 幂等助手（F-01）；`-InstallFromRepo` 内联 Move 改为统一出口 `Write-LockAtomic`（F-02）；指纹比对随选项 C 复活，`-CleanupPendingFailovers` 循环内每轮刷新 `$fpNow` 防多条目假 fail-closed（F-03）；`-EmergencyInfraFailover` 补 `$fp0`+`Assert-LockWriteAvailable`+`Set-LastWriter`+catch 释放，`run_step.ps1` 调降级传 `-AcquireLock $taskId`（F-04）；todo 同步纪律强制（F-05）；`run_step.ps1` 新增 `Write-TaskState` 写 `.harness/<task>/task-state.json` + 5 出口调用（F-06）；prechunk 阈值放宽 `$prechunkLines=80`/`$prechunkTrigger=120`/`$chunkCharCap=15000`（F-07）；`harness-implementer.md` 新增「三态执行规则（强制，每轮重述）」独立段（F-08）。DSH 侧 runner 结构平行，对应改动在下次 DSH runner 同步时落地。版本 13.0.40 → 13.0.41。
 
 ### v13.0.40 (2026-08-25)
 

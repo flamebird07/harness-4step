@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.40
+version: 13.0.41
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.40 — p20-prechunk-fix backlog)
+# Harness 4-Step Method (v13.0.41 — F-01R3 lock fix)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.41 (2026-08-27)
+
+- **harness-self-fix-20260826r3（F-01R3 锁修复 + P-01..P-08 全部 F，三平台同步）**：opencode 适配层并发锁根因修复——互斥句柄从数据文件改挂 sidecar `<lock>.mutex`（选项 C），数据文件永不持有 → `Move-Item` 覆盖不再被自身句柄阻塞（P-01/P-02 消除），新增 `Release-LockHandle` 幂等助手（F-01）；`-InstallFromRepo` 内联 Move 改为统一出口 `Write-LockAtomic`（F-02）；指纹比对随选项 C 复活，`-CleanupPendingFailovers` 循环内每轮刷新 `$fpNow` 防多条目假 fail-closed（F-03）；`-EmergencyInfraFailover` 补 `$fp0`+`Assert-LockWriteAvailable`+`Set-LastWriter`+catch 释放，`run_step.ps1` 调降级传 `-AcquireLock $taskId`（F-04）；todo 同步纪律强制（SKILL 硬性规则 + orchestrator 强制更新节 + todo 工具白名单 + 新增 `scripts/harness-status.ps1` 只读汇总）（F-05）；`run_step.ps1` 新增 `Write-TaskState`（PS 5.1 兼容）写 `.harness/<task>/task-state.json` + 5 出口调用（F-06）；prechunk 阈值放宽 `$prechunkLines=80`/`$prechunkTrigger=120`/`$chunkCharCap=15000`（F-07）；`harness-implementer.md` 新增「三态执行规则（强制，每轮重述）」独立段（F-08）。版本 13.0.40 → 13.0.41。
 
 ### v13.0.40 (2026-08-25)
 

@@ -29,6 +29,8 @@ if (-not (Test-Path -LiteralPath $claudeExe)) {
 $prompt = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
 $prompt = $prompt.Trim()
 if (-not $prompt) { throw "Prompt file is empty" }
+# [F-03] 中文路径 mojibake 防护：prompt 全部 NFD→NFC 归一化（PS 5.1 按 ANSI 解码时中文/拼音路径会呈分解形式，导致 CLI 读不到同名文件）
+$prompt = $prompt.Normalize([System.Text.NormalizationForm]::FormC)
 
 # P-04: 条件化 ANTHROPIC_* 处理——仅当 ANTHROPIC_BASE_URL 指向本地凭据池代理（127.0.0.1 / localhost）
 # 时保留 BASE_URL/API_KEY/AUTH_TOKEN（claude-code-credential-pool skill 依赖此代理）；否则 strip 之，
@@ -56,7 +58,25 @@ foreach ($name in @("ANTHROPIC_MODEL",
 $rawFile = Join-Path $OutDir "claude_raw.txt"
 $msgFile = Join-Path $OutDir "$Step-output.md"
 
-$cmd = @("-p", "--output-format", "text", "--add-dir", $WorkspaceDir)   # prompt 经管道喂 stdin，避免 8191 字符命令行截断；--add-dir 放行 Read 工具读工作目录
+# [F-03] 多目录 --add-dir：工作目录 + OPENCODE_EXTRA_ADD_DIRS（分号分隔）逐个解析为全路径并 NFC 归一化。
+# 相对路径以当前 PowerShell 位置为基准展开（bash 调本脚本时通常即仓库根）。
+function Resolve-AddDir([string]$d) {
+    $d = $d.Trim()
+    if (-not $d) { return $null }
+    if (-not [System.IO.Path]::IsPathRooted($d)) { $d = Join-Path (Get-Location).Path $d }
+    return [System.IO.Path]::GetFullPath($d).Normalize([System.Text.NormalizationForm]::FormC)
+}
+$addDirs = New-Object System.Collections.Generic.List[string]
+$wd = Resolve-AddDir $WorkspaceDir
+if ($wd) { [void]$addDirs.Add($wd) }
+if ($env:OPENCODE_EXTRA_ADD_DIRS) {
+    foreach ($d in ($env:OPENCODE_EXTRA_ADD_DIRS -split ';')) {
+        $rd = Resolve-AddDir $d
+        if ($rd -and -not $addDirs.Contains($rd)) { [void]$addDirs.Add($rd) }
+    }
+}
+$cmd = @("-p", "--output-format", "text")   # prompt 经管道喂 stdin，避免 8191 字符命令行截断；--add-dir 放行 Read 工具读各目录
+foreach ($d in $addDirs) { $cmd += "--add-dir"; $cmd += $d }
 if ($Permissions -ne "default") {
     $cmd += "--permission-mode"; $cmd += $Permissions
 }
@@ -75,13 +95,14 @@ $psi.RedirectStandardError = $true
 # redirected StreamWriter already defaults to UTF-8, so do not assign it.
 $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
 $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-$psi.WorkingDirectory = $WorkspaceDir
-$psi.Arguments = '-p --output-format text --add-dir "' + $WorkspaceDir.Replace('"', '\"') + '"'
+$psi.WorkingDirectory = $wd   # [F-03] 归一化全路径作为工作目录（中文路径不再 mojibake）
+$psi.Arguments = '-p --output-format text' + (($addDirs | ForEach-Object { ' --add-dir "' + $_.Replace('"', '\"') + '"' }) -join '')
 if ($Permissions -ne "default") { $psi.Arguments += ' --permission-mode ' + $Permissions }
 $argSummary = [ordered]@{
     executable = (Split-Path -Leaf $claudeExe)
-    switches = @("-p", "--output-format", "text", "--add-dir", $(if ($Permissions -ne "default") { "--permission-mode" } else { $null })) | Where-Object { $_ }
+    switches = @("-p", "--output-format", "text") + ($addDirs | ForEach-Object { "--add-dir" }) + $(if ($Permissions -ne "default") { @("--permission-mode") } else { @() })
     add_dir = $true
+    add_dirs = @($addDirs)   # [F-03] 实际传给 --add-dir 的目录清单（含 OPENCODE_EXTRA_ADD_DIRS）
     workspace_path_length = $WorkspaceDir.Length
 }
 $promptByteCount = [System.Text.Encoding]::UTF8.GetByteCount($prompt)
@@ -91,7 +112,15 @@ if (-not $proc.Start()) { throw "Failed to start Claude executable: $claudeExe" 
 $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
 $stderrTask = $proc.StandardError.ReadToEndAsync()
 $stdinWrite = "success"
-try { $proc.StandardInput.Write($prompt); $proc.StandardInput.Close() }
+# [F-03] UTF-8 BOM 写入 stdin：PS 5.1 的 StandardInput StreamWriter 编码不可靠（可能按 ANSI），
+# 直接 BaseStream 写 UTF-8 BOM + NFC 字节，保证 CLI 侧按 UTF-8 解码（与 check-bom.ps1 相同 EF BB BF 前置）。
+$utf8Bom = New-Object System.Text.UTF8Encoding($true)
+$promptBytes = $utf8Bom.GetPreamble() + $utf8Bom.GetBytes($prompt)
+try {
+    $proc.StandardInput.BaseStream.Write($promptBytes, 0, $promptBytes.Length)
+    $proc.StandardInput.BaseStream.Flush()
+    $proc.StandardInput.Close()
+}
 catch { $stdinWrite = "failure: $($_.Exception.Message)"; try { $proc.StandardInput.Close() } catch {} }
 
 # P-09: 启动后立即写 "running" evidence.json——外层硬杀（SIGKILL/timeout）时仍有启动记录，
@@ -130,6 +159,22 @@ if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
 }
 $proc.Dispose()
 $elapsed = ((Get-Date) - $started).TotalSeconds
+
+# [F-04] EXIT_CODE=-1 诊断：区分 spawn 失败、stdin 写入失败、空输出、ExitCode 范围异常
+$diagnosticSignal = $null
+if ($exitCode -eq -1) {
+    $stdoutLen = if ($stdout) { $stdout.Length } else { 0 }
+    $stderrLen = if ($stderr) { $stderr.Length } else { 0 }
+    if ($stdinWrite -ne "success") {
+        $diagnosticSignal = "INFRA_FAILURE:stdin_write_failed"
+    } elseif ($stdoutLen -eq 0 -and $stderrLen -eq 0) {
+        $diagnosticSignal = "INFRA_FAILURE:empty_output"
+    } else {
+        $diagnosticSignal = "INFRA_FAILURE:exit_code_anomaly"
+    }
+    Write-Output $diagnosticSignal
+    Write-Output "INFRA_FAILURE_DETAIL:exit=$exitCode stdout_bytes=$stdoutLen stderr_bytes=$stderrLen stdin=$stdinWrite"
+}
 
 $output | Out-File -LiteralPath $rawFile -Encoding utf8
 $combinedRaw = (($output | ForEach-Object { if ($null -eq $_) { "" } else { $_.ToString() } }) -join "`n")

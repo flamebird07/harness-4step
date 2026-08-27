@@ -1,4 +1,4 @@
-# Harness Violations Log
+﻿# Harness Violations Log
 
 > 本文件为违规记录的唯一 tracked 路径（F-O01）。追加用 `opencode/scripts/manage_binding.ps1 -RecordViolation`。
 > 2026-08-26 清理：历史 10 条违规均已闭环（处置完成/回退重走/守卫缺陷已修复），详见 git 历史（0bf799f、7e7a2bc、812b56c 等提交）。新违规从此追加。
@@ -7,3 +7,29 @@
      fix-3827965907234324593-illegal-select, V-2026-08-22-step2-overreach,
      V-2026-08-22-mimo-overreach, V-2026-08-22-step4-write/-falsepositive
      于 2026-08-26 归档清除：全部已闭环 -->
+
+## INFRA-FAILOVER-2026-08-27T18:21:59+08:00
+
+**时间**：2026-08-27T18:21:59+08:00
+**责任人**：orchestrator（infra-failover）
+**类别**：infra-failure
+**降级目标**：opencode-sub
+**原始绑定**：claude（step3）
+**故障分类**：other
+**pending授权**：C:\Users\Administrator\.config\opencode\harness\pending-auth.json
+**原因**：runner infra-failure (exit=13, category=other) detected by run_step.ps1 Invoke-TaskWithSplit
+---
+
+
+## INFRA-FAILOVER-2026-08-27T18:32:32+08:00
+
+**时间**：2026-08-27T18:32:32+08:00
+**责任人**：orchestrator（infra-failover）
+**类别**：infra-failure
+**降级目标**：opencode-sub
+**原始绑定**：claude（step3）
+**故障分类**：other
+**pending授权**：C:\Users\Administrator\.config\opencode\harness\pending-auth.json
+**原因**：runner infra-failure (exit=13, category=other) detected by run_step.ps1 Invoke-TaskWithSplit
+---
+

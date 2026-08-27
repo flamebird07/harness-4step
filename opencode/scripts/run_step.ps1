@@ -11,14 +11,22 @@ param(
     [int]$TimeoutSeconds = 180,
     [int]$MaxAttempts = 3,
     [int]$MaxSplitDepth = 3,
-    [int]$MaxTotalBudget = 1500   # P-07: 总预算（秒），须 < 外层 bash timeout；超限即壁死+handoff，避免外层硬杀丢证据
+    [int]$MaxTotalBudget = 1500,  # P-07: 总预算（秒），须 < 外层 bash timeout；超限即壁死+handoff，避免外层硬杀丢证据
+    [int]$MaxFailoverAttempts = 3 # F-02: 应急降级重试上限；被拒后不再静默 return，循环重试，仍失败 exit 5
 )
 $bomScript = Join-Path $PSScriptRoot "check-bom.ps1"
 if (-not (Test-Path -LiteralPath $bomScript)) { throw "BOM gate missing: $bomScript" }
+# [F-04] BOM gate 覆盖全部动态脚本 + 全部 runner（缺一 fail-closed）
 $bomFiles = @(
     (Join-Path $PSScriptRoot "run_step.ps1"),
     (Join-Path $PSScriptRoot "run_claude_step12.ps1"),
+    (Join-Path $PSScriptRoot "run_codex_step4.ps1"),
     (Join-Path $PSScriptRoot "run_mimo_step3.ps1"),
+    (Join-Path $PSScriptRoot "run_mimo_step4.ps1"),
+    (Join-Path $PSScriptRoot "run_kimi_step4.ps1"),
+    (Join-Path $PSScriptRoot "run_vision_review.ps1"),
+    (Join-Path $PSScriptRoot "step4_readonly_guard.ps1"),
+    (Join-Path $PSScriptRoot "manage_binding.ps1"),
     $bomScript
 )
 $bomOutput = @(& $bomScript -Files $bomFiles 2>&1)
@@ -151,7 +159,38 @@ function Merge-Evidence([string]$od, [int]$ec, [string]$status, [int]$att, [stri
         $merged['binding_snapshot'] = $snapshot
     }
     if ($base.PSObject.Properties.Name -contains 'warnings' -and $base.warnings) { $merged['warnings'] = $base.warnings }
+    # [F-02] 降级被拒证据：evidence.infra_failover_attempts 数组（attempt/category/exit/detail）
+    if ($script:infraFailoverAttemptsLog -and $script:infraFailoverAttemptsLog.Count -gt 0) {
+        $merged['infra_failover_attempts'] = @($script:infraFailoverAttemptsLog)
+    }
     $merged | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $runnerEvFile -Encoding utf8
+}
+
+# [F-07/P-06] 权威当前进度：每步完成后写 .harness/<task>/task-state.json（PS 5.1 兼容；编排层重连先读此文件）
+function Write-TaskState([int]$ExitCode, [string]$Status) {
+    $taskStateFile = Join-Path (Split-Path -Parent $OutDir) "task-state.json"
+    $state = @{}
+    if (Test-Path -LiteralPath $taskStateFile) {
+        try {
+            $prev = Get-Content -LiteralPath $taskStateFile -Encoding UTF8 -Raw | ConvertFrom-Json
+            if ($prev) { foreach ($p in $prev.PSObject.Properties) { $state[$p.Name] = $p.Value } }   # 合并既有步骤，勿覆盖
+        } catch {}
+    }
+    $realOutput = Join-Path $OutDir "$Step-output.md"
+    if (-not (Test-Path -LiteralPath $realOutput)) { $realOutput = Join-Path $OutDir "$Step-review.md" }
+    if (-not (Test-Path -LiteralPath $realOutput)) { $realOutput = "<not-yet-written>" }
+    $state[$Step] = [ordered]@{
+        status          = $Status
+        exit_code       = $ExitCode
+        completed       = ($ExitCode -eq 0)
+        current_binding = $b.agent
+        permission_mode = $b.permission_mode
+        out_dir         = $OutDir
+        last_output     = $realOutput
+        timestamp       = (Get-Date).ToString("o")
+    }
+    $state | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $taskStateFile -Encoding UTF8
+    Write-Output "TASK_STATE=$taskStateFile"
 }
 
 # P2(b) 修复：把"执行单分片 + 超时递归拆分"封装为函数；调度层串行调用每个预分片。
@@ -162,6 +201,8 @@ function Invoke-TaskWithSplit {
     )
     $curPrompt = $TaskPrompt; $curOut = $TaskOut; $splitParent = $InitialSplitParent
     $infraFailoverApplied = $false   # [P-09] 应急降级一次性守卫，防止 opencode-sub 再失败时无限重置 attempt
+    $script:infraFailoverAttempts = 0        # [F-02] 降级被拒重试计数
+    $script:infraFailoverAttemptsLog = @()   # [F-02] 降级被拒证据 → evidence.infra_failover_attempts
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         New-Item -ItemType Directory -Path $curOut -Force | Out-Null
         $att = $AttemptBase + $attempt - 1   # P-07 fix: assign before budget guard (was after Invoke-Runner)
@@ -200,6 +241,13 @@ function Invoke-TaskWithSplit {
             Merge-Evidence $curOut 0 $status $att $splitParent
             return [pscustomobject]@{ ExitCode=0; Status=$status; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
         }
+        # [F-03] EXIT_CODE=-1：runner 未输出 EXIT_CODE 行 → 归入 INFRA_FAILURE:empty_output
+        if ($r.ExitCode -eq -1) {
+            $infraCat = "empty_output"
+            # 走已有的 infra failover 路径（下方 infraCat 检测逻辑无需修改）
+            $r.ExitCode = 1   # 统一为 exit 1 + INFRA_FAILURE 信号，进入已有检测块
+            $r.Output += "INFRA_FAILURE:empty_output"
+        }
         # [P-09] 基础设施故障应急降级检测（core-logic §4b 第4项，设计决策 #8）
         # 信号：EXIT_CODE=13，或 EXIT_CODE=1 + stdout 'INFRA_FAILURE:<category>' 标记
         # 命中且未降级过 → 调 manage_binding.ps1 -EmergencyInfraFailover → 重读 binding → 重置 attempt 重试
@@ -207,23 +255,33 @@ function Invoke-TaskWithSplit {
         if ($r.ExitCode -eq 13) {
             $infraCat = "other"
         } elseif ($r.ExitCode -eq 1) {
-            $m = ($r.Output | Select-String -Pattern '^INFRA_FAILURE:(runner_crash|pipe_deadlock|text_repetition|process_leak|other)\s*$' | Select-Object -First 1)
+            $m = ($r.Output | Select-String -Pattern '^INFRA_FAILURE:(runner_crash|pipe_deadlock|text_repetition|process_leak|empty_output|other)\s*$' | Select-Object -First 1)
             if ($m) { $infraCat = $m.Matches[0].Groups[1].Value }
         }
-        if ($infraCat -and -not $infraFailoverApplied) {
-            $infraFailoverApplied = $true
+        if ($infraCat -and -not $infraFailoverApplied -and $script:infraFailoverAttempts -lt $MaxFailoverAttempts) {
+            $script:infraFailoverAttempts++
             $evPath = Join-Path $curOut "evidence.json"
             $mbScript = Join-Path $PSScriptRoot "manage_binding.ps1"
             $reasonStr = "runner infra-failure (exit=$($r.ExitCode), category=$infraCat) detected by run_step.ps1 Invoke-TaskWithSplit"
             # & 调用（非 dot-source）：manage_binding 的 exit 仅作用于被调脚本，$LASTEXITCODE 回传
-            $mbOut = & $mbScript -EmergencyInfraFailover -Step $Step -FailureCategory $infraCat -FailureEvidence "exit=$($r.ExitCode); evidence=$evPath" -Reason $reasonStr 2>&1
+            $taskId = Split-Path -Leaf $WorkspaceDir
+            $mbOut = & $mbScript -EmergencyInfraFailover -Step $Step -FailureCategory $infraCat -FailureEvidence "exit=$($r.ExitCode); evidence=$evPath" -Reason $reasonStr -AcquireLock $taskId 2>&1
             if ($LASTEXITCODE -ne 0) {
-                Write-Output "INFRA_FAILOVER_REJECTED step=$Step category=$infraCat (manage_binding exit=$LASTEXITCODE)"
-                Merge-Evidence $curOut $r.ExitCode "infra_failover_rejected" $att $splitParent
-                return [pscustomobject]@{ ExitCode=$r.ExitCode; Status="error"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+                # [F-02] 降级被拒（候选耗尽/约束不满足）：不静默 return；记录 attempts 并重试，达上限 fail-closed exit 5
+                Write-Output "INFRA_FAILOVER_REJECTED step=$Step category=$infraCat attempt=$($script:infraFailoverAttempts)/$MaxFailoverAttempts (manage_binding exit=$LASTEXITCODE)"
+                $rejBrief = (@($mbOut) | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join '; '
+                $script:infraFailoverAttemptsLog += ("attempt=$($script:infraFailoverAttempts) category=$infraCat exit=$LASTEXITCODE detail=$rejBrief")
+                if ($script:infraFailoverAttempts -ge $MaxFailoverAttempts) {
+                    Merge-Evidence $curOut 5 "blocked_no_compatible_failover" $att $splitParent
+                    Write-TaskState 5 "blocked_no_compatible_failover"
+                    Write-Output "EXIT_CODE=5 status=blocked_no_compatible_failover (no compatible failover after $MaxFailoverAttempts attempts)"
+                    exit 5
+                }
+                continue   # 重试降级（manage_binding 候选按序再试）
             }
+            $infraFailoverApplied = $true
             Write-Output "INFRA_FAILOVER_APPLIED step=$Step category=$infraCat → retry with new binding"
-            # 重读 binding（failover 已把 $Step 改为 opencode-sub）
+            # 重读 binding（failover 已把 $Step 改为首个兼容候选）
             $lock2 = Get-Content -LiteralPath $lockFile -Encoding UTF8 -Raw | ConvertFrom-Json
             $script:b = $lock2.bindings.$Step   # 覆盖脚本作用域 $b（Invoke-Runner 读同一 $b）
             Merge-Evidence $curOut 13 "infra_failover_applied" $att $splitParent
@@ -302,15 +360,16 @@ $curPrompt = $PromptFile
 $curOut = $OutDir
 # Step 0：主动预拆分（P-14）—— prompt 超过 60 行或 6,000 UTF-8 字符时按段落边界预拆，
 # 避免一条超长行绕过行数阈值而让 Claude 在 Windows 上长时间占用 stdin。
-$prechunkLines = 40
-$prechunkTrigger = 60
+$prechunkLines = 80        # [F-08] 放宽：每 chunk 目标行数（原 40）
+$prechunkTrigger = 120     # [F-08] 放宽：触发行数阈值（原 60）
+$chunkCharCap = 15000      # [F-08] 放宽：内层单 chunk 字节上限（原 5000，P-07：原 5000 使放宽后 15000+ 字节方案仍被切 ≥3 片）
 $txt0 = Get-Content -LiteralPath $PromptFile -Encoding UTF8 -Raw
 $lines0 = $txt0 -split "`r?`n"
 $promptChars = [System.Text.Encoding]::UTF8.GetByteCount($txt0)
 $preDir = Join-Path $OutDir "prechunks"
 $splitParent = $null
 # P-01: 所有绑定统一 prechunk，长 prompt 由每个 chunk 独立移交/执行，避免丢失后续 chunks。
-if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
+if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 15000) {   # [F-08] 字节阈值 6000→15000（中文 3 字节/字符 ≈ 5000 中文字）
     New-Item -ItemType Directory -Path $preDir -Force | Out-Null
     $chunks = New-Object System.Collections.ArrayList
     $cur = New-Object System.Collections.ArrayList
@@ -320,7 +379,7 @@ if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
         # bound too; keep it as a standalone work package rather than sending
         # the entire original prompt to the CLI.
         $chunkChars = [System.Text.Encoding]::UTF8.GetByteCount(($cur -join "`n"))
-        $isParagraphBreak = ($l.Trim() -eq "" -or $cur.Count -ge $prechunkLines -or $chunkChars -ge 5000)
+        $isParagraphBreak = ($l.Trim() -eq "" -or $cur.Count -ge $prechunkLines -or $chunkChars -ge $chunkCharCap)
         if ($isParagraphBreak) {
             if ($cur.Count -ge 4) {
                 [void]$chunks.Add(($cur -join "`n"))
@@ -337,6 +396,7 @@ if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
     # 串行调度循环（下方）天然处理任意 N 片；超大 prompt 由 Invoke-TaskWithSplit 内部递归拆分兜底。
     if ($chunks.Count -eq 1 -and $lines0.Count -lt 4) {
         Merge-Evidence $OutDir 3 "blocked_split_limit" 1 $PromptFile
+        Write-TaskState 3 "blocked_split_limit"
         Write-Output "EXIT_CODE=3 status=blocked_split_limit min_granularity prechunk"
         exit 3
     }
@@ -369,6 +429,7 @@ if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
         Write-Output "BINDING=opencode-sub STEP=$Step SUBAGENT=$subagent CHUNKS=$($chunks.Count) EXIT_CODE=99"
         foreach ($h in $handoffs) { Write-Output "PRECHUNK_HANDOFF_CHUNK=$($h.Chunk)/$($chunks.Count) $($h.Line)" }
         Merge-Evidence $OutDir 99 "handoff_pending" 1 $PromptFile
+        Write-TaskState 99 "handoff_pending"
         Write-Output "EXIT_CODE=99"; exit 99
     }
     $worse = 0
@@ -377,6 +438,7 @@ if ($lines0.Count -gt $prechunkTrigger -or $promptChars -gt 6000) {
     Merge-Evidence $OutDir $worse $status 1 $PromptFile
     # P-06/P-08: 壁死后 handoff（prechunk 路径）——编排层消费信号对原 prompt 做语义重拆
     if ($worse -eq 3) { Write-Output "SPLIT_BLOCKED_HANDOFF=$PromptFile NEEDS_SEMANTIC_RESPLIT=1" }
+    Write-TaskState $worse $status
     Write-Output "EXIT_CODE=$worse status=$status"
     exit $worse
 }  # end if ($lines0.Count -gt $prechunkTrigger)
@@ -387,5 +449,6 @@ if ($res.ExitCode -eq 99) {
 }
 # P-06/P-08: 壁死后 handoff（单任务路径）——编排层消费信号对原 prompt 做语义重拆（不换绑定、不豁免 §8b）
 if ($res.ExitCode -eq 3) { Write-Output "SPLIT_BLOCKED_HANDOFF=$PromptFile NEEDS_SEMANTIC_RESPLIT=1" }
+Write-TaskState $res.ExitCode $res.Status
 Write-Output "EXIT_CODE=$($res.ExitCode) status=$($res.Status)"
 exit $res.ExitCode
