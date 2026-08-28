@@ -98,12 +98,31 @@ $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
 $psi.WorkingDirectory = $wd   # [F-03] 归一化全路径作为工作目录（中文路径不再 mojibake）
 $psi.Arguments = '-p --output-format text' + (($addDirs | ForEach-Object { ' --add-dir "' + $_.Replace('"', '\"') + '"' }) -join '')
 if ($Permissions -ne "default") { $psi.Arguments += ' --permission-mode ' + $Permissions }
+# [F-04] step1/2 审查者（claude default 权限门）：保持工作区行为性只读（default），仅放行 Write/Edit 到本任务产物目录。
+# 修复前 default 下 Write/Edit 全被 gate 拒 → 完整问题清单/方案只能落 stdout 摘要（P-04：r4 实测 901B 覆盖 1751B）。
+# 产物 glob = 任务产物根 .harness/<task>/**（兼容主流程 OutDir=.harness/<task>/stepN 与 prechunks/NN 分片路径）。
+$allowGlob = $null
+if (($Step -eq "step1" -or $Step -eq "step2") -and $Permissions -eq "default") {
+    $taskDirParts = $OutDir -split '[\\/]'
+    $hIdx = [Array]::IndexOf($taskDirParts, ".harness")
+    if ($hIdx -ge 0 -and $taskDirParts.Count -ge $hIdx + 2) {
+        $taskDir = (($taskDirParts[0..($hIdx+1)]) -join "/").TrimEnd('/')
+    } else {
+        $taskDir = (Split-Path -Parent $OutDir).Replace('\','/').TrimEnd('/')
+    }
+    $allowGlob = $taskDir + "/**"
+    $cmd += "--allowedTools"; $cmd += ("Write(" + $allowGlob + ")")
+    $cmd += "--allowedTools"; $cmd += ("Edit(" + $allowGlob + ")")
+    $psi.Arguments += ' --allowedTools "Write(' + $allowGlob + ')"'
+    $psi.Arguments += ' --allowedTools "Edit(' + $allowGlob + ')"'
+}
 $argSummary = [ordered]@{
     executable = (Split-Path -Leaf $claudeExe)
     switches = @("-p", "--output-format", "text") + ($addDirs | ForEach-Object { "--add-dir" }) + $(if ($Permissions -ne "default") { @("--permission-mode") } else { @() })
     add_dir = $true
     add_dirs = @($addDirs)   # [F-03] 实际传给 --add-dir 的目录清单（含 OPENCODE_EXTRA_ADD_DIRS）
     workspace_path_length = $WorkspaceDir.Length
+    allowed_tools_glob = $allowGlob   # [F-04] step1/2 default 下放行的产物 Write/Edit glob（非 step1/2 为 $null）
 }
 $promptByteCount = [System.Text.Encoding]::UTF8.GetByteCount($prompt)
 $proc = New-Object System.Diagnostics.Process

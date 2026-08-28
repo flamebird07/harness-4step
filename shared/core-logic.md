@@ -68,14 +68,19 @@ Step 2 方案的每个 F 项必须标注三态之一，Step 3 严格按态执行
 
 ## 4b. 只读步骤（step1/2/4）失败处置优先级
 
-## 4b. 只读步骤（step1/2/4）失败处置优先级
-
 同一只读步骤失败/超时时，处置顺序固定为：
 
 1. 一次精简重试（仅当失败类型可重试，见 Hermes 适配层 Failure Classification Matrix）
 2. **拆分**（拆分优先于降级）：触发拆分门（**首次超时**或**两次非超时失败**）→ 生成子项，各子项独立走完整 4 步
-3. 降级换 CLI **仅限**：拆分已达最小粒度壁垒（单一函数/行区间，`BLOCKED_SPLIT_LIMIT`）仍失败，或该步绑定后端不可用（command not found / 认证 401）且无可拆分单元。
-4. **基础设施故障应急降级（v13.0.38 doc-only；v13.0.39 代码实现）**：当失败根因是**运行器自身代码 bug**（如 v13.0.37 ArgumentList 在 PS 5.1 崩溃、runner 进程泄漏、stdin 管道死锁），而非模型质量/超时/认证时，允许 orchestrator 临时把该步切到 `opencode-sub`/`dsh-sub`（原生子代理）并**立即记录 violations.log**（类别=infra-failure），随后在**同一 session 内补用户显式授权**（`manage_binding.ps1 -AuthorizeStep` 补写 authorization_log）；若 session 结束前未补授权，回退绑定并报告。此类别**不得**用于模型输出质量、超时、prompt 过大——这些仍走拆分/循环。代码级实现见 `opencode/scripts/manage_binding.ps1 -EmergencyInfraFailover` 标志 + retroactive-auth 流程（v13.0.39 落地）：`-EmergencyInfraFailover -Step <step> -FailureCategory <runner_crash|pipe_deadlock|text_repetition|process_leak|other> -FailureEvidence <证据> -Reason <文本>` 原子写 binding-lock.json（改 opencode-sub/dsh-sub）+ `pending-auth.json`（独立 pending 态，不动 binding-lock schema_version）+ `docs/violations.log`（结构化 infra-failure 条目）；session 内补 `-AuthorizeStep` ratify，未补则 `-CleanupPendingFailovers`（session 结束）或 `-Check`（stale>24h 自动回退）回退绑定。`run_step.ps1 Invoke-TaskWithSplit` 在 error-return 前检测 `EXIT_CODE=13` 或 stdout `INFRA_FAILURE:<category>` 信号触发降级+重试。fail-closed 绑定门保留（pending 授权未补即回退，不构成旁路）。
+3. **降级换 CLI（已被 v13.0.42 硬不变规则取代）**：任何 CLI/后端不可用（command not found、认证 401、
+   exit -1/-13、API Error、空输出、沙箱拦子进程）一律 **STOP 并向用户报告原始错误**，不自动改绑。
+   "拆分达最小粒度仍失败"或"绑定后端不可用"都**不**构成自动降级理由；唯一出口=用户当轮显式授权（见上方
+   「v13.0.42 硬不变规则」）。
+4. **基础设施故障应急降级（已被 v13.0.42 硬不变规则取代）**：`-EmergencyInfraFailover` 仅为**代码级可用**
+   的降级工具，orchestrator **必须**先获得用户当轮显式授权（`authorization_log.authorization` 原文）才能调用；
+   无用户原话 = 无授权 = 违规（violations.log 类别 `unauthorized_degrade`）。`disable_auto_degrade=false`
+   等任何配置均不构成自动降级依据。`run_step.ps1 Invoke-TaskWithSplit` 对 exit 13 / INFRA_FAILURE 信号执行
+   **同绑定重试**（quota→排队等待 10 次；其余→短重试 3 次；均不自动改绑），耗尽后 `exit 13` 由编排层 STOP 报告。
 
 规则：只读步骤在任何情况下**不得**因为「问题过大/质量不佳」而换 CLI 降级——那正是 v13.0.9#5 禁止的绕过。拆分优先的理由：换 CLI 不降问题的固有复杂度，只换模型；且拆分不触碰绑定锁，不构成绑定违规。opencode 适配层只在本节落地相同的拆分信号（`run_step.ps1 -SplitOf`），不复制判定逻辑。
 

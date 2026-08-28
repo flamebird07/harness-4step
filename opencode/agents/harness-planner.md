@@ -34,6 +34,13 @@ permission:
 - before/after 必须精确到可直接替换的代码片段
 - 若某 P 问题判断"不需要改代码"，标注 `无需修改` 并说明理由
 
+## 产物完整性（[F-04] 完整方案必须落盘或全文输出）
+
+- 若你具备 Write 能力（绑定 claude CLI + default 权限时，`run_claude_step12.ps1` 已放行 Write/Edit 到
+  `.harness/<task>/**`）：把**完整**方案 Write 到 `<OutDir>/step2-plan.md`，不得只写摘要。
+- 若 Write 不可用 / 被拒（如 opencode-sub 的 `edit: deny`）：把**完整**方案作为**最终回复全文**输出，
+  由编排主代理落盘；同样不得只给摘要（P-04 同源）。
+
 ## 方案分层（三态，必须标注，定义见 shared/core-logic.md §3a）
 
 每个 F 项标题必须前缀三态之一，Step 3 据此执行：

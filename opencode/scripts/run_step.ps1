@@ -61,6 +61,22 @@ if ($Step -eq "step4" -and $lock.backends.$step3Agent.family -eq $lock.backends.
     throw "step4 backend family must differ from step3 backend family"
 }
 
+# [F-05] 每步 timeout 与 harness-config.json 对齐：manage_binding -Check 展示的 timeout = runner 实际生效值。
+# 优先级：显式 -TimeoutSeconds 参数 > harness-config.json（steps.<step>.timeout_seconds 或 defaults.timeout_seconds）> 默认 180s。
+if (-not $PSBoundParameters.ContainsKey('TimeoutSeconds')) {
+    $cfgPath = if ($env:OPCODE_HARNESS_CONFIG) { $env:OPCODE_HARNESS_CONFIG }
+               else { Join-Path $HOME ".config\opencode\harness\harness-config.json" }
+    if (Test-Path -LiteralPath $cfgPath) {
+        try {
+            $cfg = Get-Content -LiteralPath $cfgPath -Encoding UTF8 -Raw | ConvertFrom-Json
+            $cfgT = $null
+            if ($null -ne $cfg.steps.$Step.timeout_seconds) { $cfgT = [int]$cfg.steps.$Step.timeout_seconds }
+            elseif ($null -ne $cfg.defaults.timeout_seconds) { $cfgT = [int]$cfg.defaults.timeout_seconds }
+            if ($cfgT -and $cfgT -gt 0) { $TimeoutSeconds = $cfgT; Write-Output "TIMEOUT_FROM_CONFIG=$Step=$TimeoutSeconds" }
+        } catch { Write-Output "WARNING: harness-config.json 解析失败，使用默认 timeout=$TimeoutSeconds" }
+    }
+}
+
 # Step4 只读技术强制（core-logic §8/§8b + F-08）：CLI 路径由本脚本 Save/Assert 快照自动回退并标违规；opencode-sub 路径快照由本脚本 Save、由主编排层 Assert（见 harness-orchestrator.md）
 $step4GuardLoaded = $false
 if ($Step -eq "step4") {
@@ -117,7 +133,8 @@ function Invoke-Runner([string]$pf, [string]$od) {
 
 function Merge-Evidence([string]$od, [int]$ec, [string]$status, [int]$att, [string]$parent) {
     # 动态发现真实 output 路径：step4 reviewer 类产物 → stepN-review.md；其它 stepN-output.md
-    $candidates = @("$Step-review.md", "$Step-output.md")
+    # [F-04] 追加 step1-problems.md / step2-plan.md：审查者/方案者（claude default scoped Write）直接落盘的产品文件
+    $candidates = @("$Step-review.md", "$Step-output.md", "$Step-problems.md", "$Step-plan.md")
     $realOutput = $null
     foreach ($c in $candidates) {
         $p = Join-Path $od $c
@@ -178,6 +195,8 @@ function Write-TaskState([int]$ExitCode, [string]$Status) {
     }
     $realOutput = Join-Path $OutDir "$Step-output.md"
     if (-not (Test-Path -LiteralPath $realOutput)) { $realOutput = Join-Path $OutDir "$Step-review.md" }
+    if (-not (Test-Path -LiteralPath $realOutput)) { $realOutput = Join-Path $OutDir "$Step-problems.md" }
+    if (-not (Test-Path -LiteralPath $realOutput)) { $realOutput = Join-Path $OutDir "$Step-plan.md" }
     if (-not (Test-Path -LiteralPath $realOutput)) { $realOutput = "<not-yet-written>" }
     $state[$Step] = [ordered]@{
         status          = $Status
@@ -203,86 +222,169 @@ function Invoke-TaskWithSplit {
     $infraFailoverApplied = $false   # [P-09] 应急降级一次性守卫，防止 opencode-sub 再失败时无限重置 attempt
     $script:infraFailoverAttempts = 0        # [F-02] 降级被拒重试计数
     $script:infraFailoverAttemptsLog = @()   # [F-02] 降级被拒证据 → evidence.infra_failover_attempts
+    $script:quotaWaitActive = $false         # [F-06] quota 排队等待期间豁免总预算守卫（等待≠任务工作，超时由外层 bash timeout 兜底）
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         New-Item -ItemType Directory -Path $curOut -Force | Out-Null
         $att = $AttemptBase + $attempt - 1   # P-07 fix: assign before budget guard (was after Invoke-Runner)
         # P-07: 总预算守卫——超限即壁死（exit 3）+ handoff（由外层 F-P06/P08 发 SPLIT_BLOCKED_HANDOFF）
-        if ($MaxTotalBudget -gt 0 -and ((Get-Date) - $scriptBudgetStart).TotalSeconds -gt $MaxTotalBudget) {
+        # [F-06] quota 排队等待期间豁免：等待≠任务工作，超时由外层 bash timeout 兜底
+        if ($MaxTotalBudget -gt 0 -and -not $script:quotaWaitActive -and ((Get-Date) - $scriptBudgetStart).TotalSeconds -gt $MaxTotalBudget) {
             Merge-Evidence $curOut 3 "blocked_split_limit" $att $splitParent
             return [pscustomobject]@{ ExitCode=3; Status="blocked_split_limit"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent; Detail="total_budget_exceeded" }
         }
-        $r = Invoke-Runner $curPrompt $curOut
-        if ($r.ExitCode -eq 99) {
-            Merge-Evidence $curOut 99 "handoff_pending" $att $splitParent
-            # 信号不能在本函数内 Write-Output：调用方会把函数输出赋值给 $res，
-            # 导致信号被吞掉。作为字段返回，最外层再写到 stdout。
-            return [pscustomobject]@{ ExitCode=99; Status="handoff_pending"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent; Output=$r.Output }
-        }
-        if ($Step -eq "step4" -and $step4GuardLoaded -and $b.agent -ne "opencode-sub") {
-            try {
-                $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $b.agent
-                if ($changed -and $changed.Count -gt 0) {
-                    Write-Output "VIOLATION: step4 wrote files: $($changed -join ', ') — auto-reverted per core-logic §8/§8b (correctness does not exempt)"
-                    Merge-Evidence $curOut 4 "violation_step4_write" $att $splitParent
-                    return [pscustomobject]@{ ExitCode=4; Status="violation_step4_write"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+        # [F-06] 内层 infra/quota 重试环：quota/INFRA 重试 continue 内环（不消耗外层 $attempt），
+        # 非 infra 结果 break 交外层处理 -2 拆分 / 错误返回；exit 13 在重试数达上限时可达。
+        # （修复前外层 for 封顶 3 + no_return 兜底使 quota 的 10 次排队等待永远不可达 = 死代码）
+        while ($true) {
+            $r = Invoke-Runner $curPrompt $curOut
+            if ($r.ExitCode -eq 99) {
+                Merge-Evidence $curOut 99 "handoff_pending" $att $splitParent
+                # 信号不能在本函数内 Write-Output：调用方会把函数输出赋值给 $res，
+                # 导致信号被吞掉。作为字段返回，最外层再写到 stdout。
+                return [pscustomobject]@{ ExitCode=99; Status="handoff_pending"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent; Output=$r.Output }
+            }
+            if ($Step -eq "step4" -and $step4GuardLoaded -and $b.agent -ne "opencode-sub") {
+                try {
+                    $changed = Assert-Step4ReadOnly -WorkspaceDir $WorkspaceDir -OutDir $OutDir -Step4Agent $b.agent
+                    if ($changed -and $changed.Count -gt 0) {
+                        Write-Output "VIOLATION: step4 wrote files: $($changed -join ', ') — auto-reverted per core-logic §8/§8b (correctness does not exempt)"
+                        Merge-Evidence $curOut 4 "violation_step4_write" $att $splitParent
+                        return [pscustomobject]@{ ExitCode=4; Status="violation_step4_write"; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+                    }
+                } catch { Write-Output "WARNING: Assert-Step4ReadOnly failed: $_" }
+            }
+            if ($r.ExitCode -eq 0) {
+                $status = "success"
+                if ($Step -eq "step4" -and $b.agent -eq "mimo") {
+                    $dup = $r.Output | Where-Object { $_ -match '\S' } | Group-Object { $_.Trim() } |
+                           Where-Object { $_.Count -ge 5 -and $_.Name.Length -ge 20 } | Select-Object -First 1
+                    if ($dup) {
+                        $status = "success_with_repeat_warning"
+                        Write-Output "WARNING: mimo step4 output repeats a line x$($dup.Count): '$($dup.Name.Substring(0,[Math]::Min(40,$dup.Name.Length)))'... possible degenerate generation. Suggestion: rerun step4 with kimi (binding change requires user authorization; NOT auto-switched per section 4b)."
+                    }
                 }
-            } catch { Write-Output "WARNING: Assert-Step4ReadOnly failed: $_" }
-        }
-        if ($r.ExitCode -eq 0) {
-            $status = "success"
-            if ($Step -eq "step4" -and $b.agent -eq "mimo") {
-                $dup = $r.Output | Where-Object { $_ -match '\S' } | Group-Object { $_.Trim() } |
-                       Where-Object { $_.Count -ge 5 -and $_.Name.Length -ge 20 } | Select-Object -First 1
-                if ($dup) {
-                    $status = "success_with_repeat_warning"
-                    Write-Output "WARNING: mimo step4 output repeats a line x$($dup.Count): '$($dup.Name.Substring(0,[Math]::Min(40,$dup.Name.Length)))'... possible degenerate generation. Suggestion: rerun step4 with kimi (binding change requires user authorization; NOT auto-switched per section 4b)."
+                Merge-Evidence $curOut 0 $status $att $splitParent
+                return [pscustomobject]@{ ExitCode=0; Status=$status; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
+            }
+            # [F-03] EXIT_CODE=-1：runner 未输出 EXIT_CODE 行 → 归入 INFRA_FAILURE:empty_output
+            if ($r.ExitCode -eq -1) {
+                $infraCat = "empty_output"
+                # 走已有的 infra failover 路径（下方 infraCat 检测逻辑无需修改）
+                $r.ExitCode = 1   # 统一为 exit 1 + INFRA_FAILURE 信号，进入已有检测块
+                $r.Output += "INFRA_FAILURE:empty_output"
+            }
+            # [P-09/v13.0.42] 基础设施故障检测（不自动降级）
+            # ============================================================
+            # 设计意图（cross-platform invariant，DSH/Hermes 实现本块时参考）
+            # ============================================================
+            # v13.0.42 硬不变规则：CLI 不可用时**不自动改绑到另一个 backend**（orchestrator 须等用户显式授权）。
+            # 但 CLI 不可用**不等于**任务失败——大多数情况是临时性，proxy 重试即可恢复：
+            #
+            #   ┌─────────────────────────┐    ┌─────────────────────────┐
+            #   │  凭证池配额耗尽 (429)    │ →  │ 排队等待凭证轮换恢复   │
+            #   │  • claude: All creds     │    │  • backoff: 60-180s     │
+            #   │    exhausted/rate-limited│    │  • attempts: 10          │
+            #   │  • codex: rate_limit     │    │  • 总计 ~15-30 分钟      │
+            #   └─────────────────────────┘    └─────────────────────────┘
+            #                              不异常退出，编排层继续 retry
+            #
+            #   ┌─────────────────────────┐    ┌─────────────────────────┐
+            #   │  P-18 解析失败 / 空输出  │ →  │ 快速重试（凭证轮换）   │
+            #   │  • Failed to parse JSON   │    │  • backoff: 5-30s        │
+            #   │  • empty_output           │    │  • attempts: 3            │
+            #   │  • spawn 失败             │    │  • 总计 ~1-2 分钟        │
+            #   └─────────────────────────┘    └─────────────────────────┘
+            #                              重试耗尽 → STOP 报告用户
+            #
+            # **设计关键**：并发 agent 由 proxy 凭证轮换承担（ThreadingHTTPServer + RLock），
+            # **不在 runner 层强制串行**。多个 claude.exe 可并行打 proxy，proxy 轮换凭证分配。
+            # 用户原话（2026-08-27）："Claude 的并发 agent 和等待功能我都要，
+            # 并发不行了就排队等待，而不是直接异常"——本设计正是该要求的落地。
+            #
+            # **跨平台扩展点**（DSH/Hermes 适配层实现同样机制时）：
+            #   - 错误信号识别：claude "Request rejected (429)" / "credentials in the pool
+            #     are exhausted or rate-limited"；codex "rate_limit_exceeded"；
+            #     kimi "rate limit exceeded"；mimo "rate limit"。DSH/Hermes 各自把
+            #     429/quota 信号统一映射为 INFRA_FAILURE:quota_exhausted。
+            #   - backoff 参数：`$quotaBackoffSeconds`（默认 60-180）+ `$quotaMaxAttempts`
+            #     （默认 10）按代理轮换周期调整；DSH 默认值可不同。
+            #   - 等待语义：所有平台都按"长时等待 + 多重试"实现可恢复错误的排队等待；
+            #     不在 runner 层报 exit-code 给上层（编排层无需再做 STOP 决策）。
+            #   - 不自动降级：统一由 v13.0.42 硬规则保护，所有平台必须 STOP 报告而非切 backend。
+            # ============================================================
+
+            $infraCat = $null
+            $retryable = $false
+            # quotaExhausted 单独标记：区分"等轮换"vs"快速重试"两类故障
+            $quotaExhausted = $false
+            if ($r.ExitCode -eq 13) {
+                $infraCat = "claude_json_parse"
+                $retryable = $true
+                # 检测 stdout/stderr 是否含 429/quota 信号（claude proxy 当前转发上游 429/quota 字面文本）
+                $quotaSignal = ($r.Output | Select-String -Pattern '(?i)429|exhausted|rate.?limit|quota|Request rejected' | Select-Object -First 1)
+                if ($quotaSignal) {
+                    $infraCat = "quota_exhausted"
+                    $quotaExhausted = $true
+                }
+            } elseif ($r.ExitCode -eq 1) {
+                $m = ($r.Output | Select-String -Pattern '^INFRA_FAILURE:(runner_crash|pipe_deadlock|text_repetition|process_leak|empty_output|other)\s*$' | Select-Object -First 1)
+                if ($m) { $infraCat = $m.Matches[0].Groups[1].Value }
+                # 纯 infra 类别（runner 自身崩溃/死锁/泄漏/空输出）也仅重试，不自动降级（v13.0.42）
+                $retryable = $true
+                # 检测 stdout/stderr 是否含 quota 信号
+                $quotaSignal = ($r.Output | Select-String -Pattern '(?i)429|exhausted|rate.?limit|quota|Request rejected' | Select-Object -First 1)
+                if ($quotaSignal) {
+                    $infraCat = "quota_exhausted"
+                    $quotaExhausted = $true
                 }
             }
-            Merge-Evidence $curOut 0 $status $att $splitParent
-            return [pscustomobject]@{ ExitCode=0; Status=$status; OutDir=$curOut; Attempt=$att; SplitParent=$splitParent }
-        }
-        # [F-03] EXIT_CODE=-1：runner 未输出 EXIT_CODE 行 → 归入 INFRA_FAILURE:empty_output
-        if ($r.ExitCode -eq -1) {
-            $infraCat = "empty_output"
-            # 走已有的 infra failover 路径（下方 infraCat 检测逻辑无需修改）
-            $r.ExitCode = 1   # 统一为 exit 1 + INFRA_FAILURE 信号，进入已有检测块
-            $r.Output += "INFRA_FAILURE:empty_output"
-        }
-        # [P-09/v13.0.42] 基础设施故障检测（不自动降级）
-        # v13.0.42 硬不变规则：CLI 不可用（exit 13 / exit -1 / INFRA_FAILURE:*）一律**不自动改绑**。
-        #   - exit 13（claude "Failed to parse JSON"，P-18）：多为上游/代理/凭证池瞬时问题，
-        #     本地代理（claude_credential_proxy.py）已在配额/限流时自动轮换凭证重试，因此
-        #     正确动作是**同绑定重试**，而非切到别的 backend。
-        #   - 重试仍失败 → 输出 INFRA_FAILURE 信号并 exit 13，让编排层 STOP 报告用户；
-        #     编排层必须等用户当轮显式授权才能降级（-EmergencyInfraFailover 仅由用户授权触发）。
-        $infraCat = $null
-        $retryable = $false
-        if ($r.ExitCode -eq 13) {
-            $infraCat = "claude_json_parse"
-            $retryable = $true
-        } elseif ($r.ExitCode -eq 1) {
-            $m = ($r.Output | Select-String -Pattern '^INFRA_FAILURE:(runner_crash|pipe_deadlock|text_repetition|process_leak|empty_output|other)\s*$' | Select-Object -First 1)
-            if ($m) { $infraCat = $m.Matches[0].Groups[1].Value }
-            # 纯 infra 类别（runner 自身崩溃/死锁/泄漏/空输出）也仅重试，不自动降级（v13.0.42）
-            $retryable = $true
-        }
-        if ($infraCat -and $retryable -and $script:infraFailoverAttempts -lt $MaxFailoverAttempts) {
-            # [v13.0.42] 同绑定重试（不调 -EmergencyInfraFailover）：本地代理会在配额/限流时轮换凭证，
-            # 重试命中新凭证即可恢复，无需改绑。记录 attempts 供 evidence 追溯。
-            $script:infraFailoverAttempts++
-            Write-Output ("INFRA_RETRY step={0} category={1} attempt={2}/{3}（同绑定重试，v13.0.42 不自动降级；proxy 自动轮换凭证）" -f $Step, $infraCat, $script:infraFailoverAttempts, $MaxFailoverAttempts)
-            $script:infraFailoverAttemptsLog += ("attempt=$($script:infraFailoverAttempts) category=$infraCat exit=$($r.ExitCode)")
-            if ($script:infraFailoverAttempts -ge $MaxFailoverAttempts) {
-                # 重试耗尽 → 输出 INFRA_FAILURE 信号 + exit 13，编排层 STOP 报告用户（不降级）
-                $r.Output += ("INFRA_FAILURE:" + $infraCat)
-                Merge-Evidence $curOut 13 "infra_retry_exhausted" $att $splitParent
-                Write-TaskState 13 "infra_retry_exhausted"
-                Write-Output ("INFRA_FAILURE:{0}" -f $infraCat)
-                Write-Output "INFRA_FAILURE_DETAIL: 同绑定重试 $MaxFailoverAttempts 次仍失败；按 v13.0.42 硬不变规则不自动降级——编排层须 STOP 并向用户报告，等用户显式授权后才能降级"
-                Write-Output "EXIT_CODE=13"
-                exit 13
+            # 不同故障类的重试参数（跨平台 invariant：429 → 长等待，其他 → 短重试）
+            $currentMaxAttempts = if ($quotaExhausted) { 10 } else { $MaxFailoverAttempts }   # 10 vs 3
+            $currentBackoffSeconds = if ($quotaExhausted) { 60 } else { 5 }                  # 起步 backoff
+            $currentMaxBackoffSeconds = if ($quotaExhausted) { 180 } else { 30 }              # 上限 backoff
+
+            if ($infraCat -and $retryable) {   # [F-06] 去掉 -lt $currentMaxAttempts：改由下方耗尽判断出口（内环不受外层 3 次限制）
+                # [v13.0.42] 同绑定重试（不调 -EmergencyInfraFailover）：本地代理（ThreadingHTTPServer + RLock）
+                # 会在配额/限流时自动轮换凭证，重试命中新凭证即可恢复，无需改绑。
+                $script:infraFailoverAttempts++
+                if ($quotaExhausted) {
+                    # 凭证池排队等待语义：长 backoff（60-180s）等待 proxy 轮换凭证池恢复。
+                    # 用户原话（2026-08-27）："并发不行了就排队等待，而不是直接异常"。
+                    $sleepSeconds = $currentBackoffSeconds
+                    $reasonText = "排队等待凭证轮换恢复（proxy 429/quota-exhausted；backoff 60-180s）"
+                } else {
+                    # 其他 INFRA_FAILURE：短重试（5-30s backoff）
+                    $sleepSeconds = $currentBackoffSeconds
+                    $reasonText = "同绑定快速重试"
+                }
+                Write-Output ("INFRA_RETRY step={0} category={1} attempt={2}/{3}（{4}；v13.0.42 不自动降级；proxy 自动轮换凭证）" -f $Step, $infraCat, $script:infraFailoverAttempts, $currentMaxAttempts, $reasonText)
+                $script:infraFailoverAttemptsLog += ("attempt=$($script:infraFailoverAttempts) category=$infraCat exit=$($r.ExitCode) quota=$quotaExhausted")
+                if ($script:infraFailoverAttempts -ge $currentMaxAttempts) {
+                    # 重试耗尽 → 输出 INFRA_FAILURE 信号 + exit 13，编排层 STOP 报告用户（不降级）
+                    $r.Output += ("INFRA_FAILURE:" + $infraCat)
+                    if ($quotaExhausted) {
+                        # [F-10] 编排层机器信号：明确"凭证池耗尽、已排队等待 N 次"，据此向用户报告而非静默重跑
+                        Write-Output ("INFRA_FAILURE_CRED_POOL_EXHAUSTED=1 attempts={0}" -f $script:infraFailoverAttempts)
+                    }
+                    $detailText = if ($quotaExhausted) {
+                        "凭证池排队等待 $currentMaxAttempts 次仍 429/quota-exhausted；按 v13.0.42 硬不变规则不自动降级——编排层须 STOP 并向用户报告，等用户显式授权后才能降级"
+                    } else {
+                        "同绑定重试 $currentMaxAttempts 次仍失败；按 v13.0.42 硬不变规则不自动降级——编排层须 STOP 并向用户报告，等用户显式授权后才能降级"
+                    }
+                    Merge-Evidence $curOut 13 "infra_retry_exhausted" $att $splitParent
+                    Write-TaskState 13 "infra_retry_exhausted"
+                    Write-Output ("INFRA_FAILURE:{0}" -f $infraCat)
+                    Write-Output ("INFRA_FAILURE_DETAIL: " + $detailText)
+                    Write-Output "EXIT_CODE=13"
+                    exit 13   # [F-06] 现在可达（内环不受外层 3 次限制）
+                }
+                if ($quotaExhausted) { $script:quotaWaitActive = $true }   # [F-06] 预算豁免标志：quota 排队等待期间不壁死
+                # 排队等待/快速重试前 sleep（让 proxy 凭证池有时间轮换）
+                Start-Sleep -Seconds $sleepSeconds
+                continue   # [F-06] 内环 continue：不消耗外层 attempt
             }
-            continue   # 同绑定重试
+            $script:quotaWaitActive = $false
+            break   # [F-06] 非 infra → 交外层处理 -2 拆分 / 错误返回
         }
         if ($r.ExitCode -ne -2) {
             Merge-Evidence $curOut $r.ExitCode "error" $att $splitParent

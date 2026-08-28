@@ -38,6 +38,10 @@ permission:
 
 **唯一合法出口**：用户在当轮问答中明确说"降级到 X"或"用 X 继续"。该原话必须原样写入 `authorization_log.authorization` 字段。无原话 = 无授权。
 
+**[F-10] 凭证池耗尽信号**：`run_step.ps1` 输出 `INFRA_FAILURE_CRED_POOL_EXHAUSTED=1 attempts=N`（凭证池排队等待 N 次仍 429/quota）→ 你**不得静默重跑该步**，必须 **STOP 并向用户报告**（凭证池耗尽、已排队等待 N 次、不自动降级），等用户显式授权后再动作。同一信号也对应 `INFRA_FAILURE:quota_exhausted` + `EXIT_CODE=13` + evidence `status=infra_retry_exhausted`。
+
+**[F-01/F-02] bash→PowerShell 唯一入口**：bash 内调 PowerShell 一律 `scripts/ps.sh <ps1> [args…]`（仅 `-File` 模式；脚本路径与参数值禁止反斜杠；值含 `$`/`\` 先赋 shell 变量）。**禁止** bash 内联 `powershell -Command "…$…"`——`$` 会被 bash 展开吞掉（P-01/P-02 根因）。
+
 ## 路由规则
 
 0. **Step 0 强制 Check + 唯一分派入口（V13.0.29）**：开始任何四步闭环前，必须先 `bash --timeout 300000 -c "powershell.exe -NoProfile -NonInteractive -NoLogo -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"` 校验绑定；输出无 `BINDING_LOCK_OK`（lock 损坏/漏字段/step3≠step4 模型族冲突）即停止并向用户报告，不得继续 Step 1。四步闭环每步统一经 `bash --timeout 1800000 -c "powershell.exe -NoProfile -NonInteractive -NoLogo -File opencode/scripts/run_step.ps1 -Step step<N> ... | Tee-Object -FilePath .harness/<task>/step<N>/run.log"` 分派：绑定=claude/codex/mimo/kimi 时脚本直调**该绑定的** runner；绑定=opencode-sub 时脚本输出 `BINDING=opencode-sub`、`STEP=<step>`、`SUBAGENT=<对应角色>` 和出口码 99，主 agent 必须只用 OpenCode Task 调该角色（step1→auditor、step2→planner、step3→implementer、step4→verifier）。`task` 不可用、权限拒绝或子代理失败时，保留原错误并报告；**禁止**改调 Hermes、其他 CLI 或主 agent 代做。只读步骤超时 `EXIT_CODE=-2` → 立即触发拆分（`MaxAttempts=3`/`MaxSplitDepth=3`/`最小粒度<4行`/`EXIT_CODE=3`），不得停下汇报。`run_step.ps1` 是唯一分派入口，主 agent 不得跳过它直接调 runner 脚本。**留痕**：Step 3 分派前记录实际绑定路径（`manage_binding.ps1 -ShowBindings` 输出 + `run_step.ps1` 实际命中分支）到 step3 产物头部；只有实际路径与锁中绑定不符、或主 agent 绕过 `run_step.ps1` 时才是绑定违规。**Step4 快照强制（§8b）**：`run_step.ps1` 已在 step4 执行前自动 `Save-Step4Snapshot`；CLI 路径由脚本立即 Assert；opencode-sub 路径下本层必须在 `harness-verifier` Task 返回后立即执行 `Assert-Step4ReadOnly`，命中即回退+记录。

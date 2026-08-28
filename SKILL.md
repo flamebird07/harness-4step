@@ -1,7 +1,7 @@
 ---
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.42
+version: 13.0.43
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.42 — 降级禁令硬不变规则)
+# Harness 4-Step Method (v13.0.43 — r4 CLI 障碍修复)
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +751,10 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+### v13.0.43 (2026-08-28)
+
+- **r4 CLI 障碍修复（codex gpt-5.6-terra 审查 + claude 实施，复审通过）**：新增 `scripts/ps.sh`——bash→PowerShell 唯一执行入口（F-01/F-02：禁内联 `-Command` 杜绝 bash 吞 `$`，反斜杠路径归一，裸 `$`/`\` 参数 fail-closed）；claude step1/2 scoped `--allowedTools` 放行 `.harness/<task>/**` 产物（F-04）；`run_step.ps1` 读 `harness-config.json` timeout（F-05）；**quota 排队等待内层重试环**——修复 P-06（外层 for 封顶 3 → no_return），quota 路径 10 次排队等待真实生效 + 预算豁免（F-06）；`INFRA_FAILURE_CRED_POOL_EXHAUSTED` 编排层机器信号（F-10）；`core-logic.md §4b` 旧降级描述替换为"已被 v13.0.42 硬不变规则取代" + 重复 `## 4b` 标题修复（F-11）。并发 agent 由 claude_credential_proxy.py（ThreadingHTTPServer + RLock + 凭证轮转）承担，runner 不强制串行。用户原话（2026-08-28）："step1/4 用 codex cli 模型 gpt-5.6-terra，step2/3 用 Claude cli；Claude 的并发 agent 和等待功能我都要，并发不行了就排队等待，而不是直接异常"。版本 13.0.42 → 13.0.43。
 
 ### v13.0.42 (2026-08-27)
 

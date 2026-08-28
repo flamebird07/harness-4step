@@ -34,6 +34,13 @@ permission:
 - 按严重度排序（阻塞 → 一般 → 轻微）
 - 逐条编号 P-01、P-02……
 
+## 产物完整性（[F-04] 完整清单必须落盘或全文输出）
+
+- 若你具备 Write 能力（绑定 claude CLI + default 权限时，`run_claude_step12.ps1` 已放行 Write/Edit 到
+  `.harness/<task>/**`）：把**完整**问题清单 Write 到 `<OutDir>/step1-problems.md`，不得只写摘要。
+- 若 Write 不可用 / 被拒（如 opencode-sub 的 `edit: deny`）：把**完整**问题清单作为**最终回复全文**输出，
+  由编排主代理落盘；同样不得只给摘要（P-04：摘要截断曾使 1751B 完整清单被覆盖成 901B）。
+
 ## 硬性禁止（违反即失败）
 
 - 禁止给出任何修复建议、before/after 代码

@@ -1,10 +1,10 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.42
+version: 13.0.43
 ---
 
-# 四步法 Harness（opencode 适配层）v13.0.42 — 降级禁令硬不变规则
+# 四步法 Harness（opencode 适配层）v13.0.43 — r4 CLI 障碍修复
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -97,6 +97,8 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/run_m
 > **根因**：opencode bash 工具默认 `timeout=120000` 且输出超 2000 行/51200 字节截断；各 runner 末尾才集中 `Write-Output EXIT_CODE/ELAPSED/RAW/OUTPUT`，120s 前无增量落盘，导致超时 `-2` 与耗时证据被吞没，拆分链无法触发。
 
 > **P-07 外层 timeout 预算（v13.0.38）**：`run_step.ps1` 调用的外层 bash timeout 须 ≥ `MaxSplitDepth × TimeoutSeconds × 5`（覆盖递归 a/b 二分 + prechunk 串行），默认 180×3×5=2700s。原 300000ms(300s) 远不够（拆分链最坏 720-2700s），统一改为 **1800000ms（30min）**。`run_step.ps1` 内部另有 `MaxTotalBudget=1500s` 总预算守卫，超限即壁死+handoff 写 evidence，避免被外层硬杀留无证据。`manage_binding.ps1 -Check` / `run_vision_review.ps1` 等快速校验/单次调用保留 300000ms。
+> **[F-06] quota 排队等待时长**：凭证池 429/quota 命中时 `run_step.ps1` 排队等待最长约 **30min**（10 次 × 每次 60-180s backoff），该期间豁免 `MaxTotalBudget` 总预算（等待≠任务工作）。故外层 bash timeout 调 `run_step.ps1` **不得 < 1800000ms**；等待耗尽仍失败输出 `INFRA_FAILURE_CRED_POOL_EXHAUSTED=1` + `EXIT_CODE=13`，由编排层 STOP 报告。
+> **[F-05] timeout 生效来源优先级**：显式 `-TimeoutSeconds` 参数 > harness-config.json（`steps.<step>.timeout_seconds` 或 `defaults.timeout_seconds`）> 默认 180s。`run_step.ps1` 启动时若命中 config 会输出 `TIMEOUT_FROM_CONFIG=<step>=<s>`，与 `manage_binding.ps1 -ShowBindings/-Check` 展示值一致。
 
 **强制**：所有 `bash` 调 `run_step.ps1 / manage_binding.ps1 / run_claude_step12.ps1 / run_mimo_step*.ps1 / run_codex_step4.ps1 / run_vision_review.ps1` 必须：
 
@@ -148,8 +150,8 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manag
 `step1` 至 `step4` 的唯一启动入口是 `scripts/run_step.ps1`。主 agent 不得直接调用 `Task`、任一 `harness-*` subagent 或任一独立 runner；必须先由该脚本完成 Step 0 的 lock/binding 校验，再按当前 `bindings.<step>` 路由。缺失、未锁定、非法或无法解析的 lock 一律 fail-closed，且不得启动 CLI 或 subagent。
 
 1. **Step 0** 建工作区 `.harness/<task>/`，告知用户产物落盘位置。**V10 强制**：`bash --timeout 300000 -c "powershell.exe -File opencode/scripts/manage_binding.ps1 -Check | Tee-Object -FilePath .harness/<task>/binding-check.log"` 校验；`locked` 必须 `true`、step3 与 step4 模型族必须不同（`constraints.step4_must_differ_from_step3_family`）；任一不满足 orchestrator fail-closed 拒绝启动。绑定变更通过编辑 `binding-lock.json` 并在 `authorization_log` 追加条目实现。
-2. **Step 1** `harness-auditor`：`bash --timeout 1800000 -c "powershell.exe -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"` → `step1-problems.md`（P 编号）。只读步骤超时 `EXIT_CODE=-2` → 立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`），不得停下汇报。零问题则终止。
-3. **Step 2** `harness-planner`：同上 `bash --timeout 1800000 … | Tee-Object` → `step2-plan.md`（F-<P编号>），超时同 V11 立即拆分。
+2. **Step 1** `harness-auditor`：`bash --timeout 1800000 -c "powershell.exe -File opencode/scripts/run_step.ps1 -Step step1 ... | Tee-Object -FilePath .harness/<task>/step1/run.log"` → `step1-problems.md`（P 编号）。[F-04] claude default 已放行 Write/Edit 到 `.harness/<task>/**`，审查者把**完整**清单直接 Write 到 `<step1 OutDir>/step1-problems.md`；Write 被拒则全文输出由编排层落盘（不得只给摘要）。只读步骤超时 `EXIT_CODE=-2` → 立即走 `run_step.ps1:140 MaxSplitDepth=3` 拆分（`MaxAttempts=3`/`最小粒度<4行`/`EXIT_CODE=3 blocked_split_limit`），不得停下汇报。零问题则终止。
+3. **Step 2** `harness-planner`：同上 `bash --timeout 1800000 … | Tee-Object` → `step2-plan.md`（F-<P编号>），[F-04] 同 step1 的 scoped Write/全文输出约束，超时同 V11 立即拆分。
 4. **Step 2.5** 基线：git 仓库 `git diff > baseline.diff`；非 git 复制到 `backup/`。
 5. **Step 3** 执行：把方案写入 `step3-prompt.txt` → `bash --timeout 1800000 -c "powershell.exe -File opencode/scripts/run_step.ps1 -Step step3 ... | Tee-Object -FilePath .harness/<task>/step3/run.log"` → 读 `step3/step3-output.md`。执行后对比基线验无方案外改动。
 6. **Step 4** **`harness-verifier` subagent（opencode-sub）**：`bash --timeout 1800000 -c "powershell.exe -File opencode/scripts/run_step.ps1 -Step step4 ... | Tee-Object -FilePath .harness/<task>/step4/run.log"`（Save@step4前）→ Task 调 `harness-verifier` → 编排层 `Assert-Step4ReadOnly`（命中即 `EXIT_CODE=4 violation_step4_write` + 自动回退，§8b 正确性不豁免）→ `step4/step4-review.md`，评级 `通过`/`需调整`。CLI 备用路径（mimo/codex）同理但 Save/Assert 均在 `run_step.ps1` 内自动完成。超时同样立即拆分，不得 `auto_pass_timeout` 静默转通过（已移除）。
@@ -157,7 +159,8 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manag
 
 ## 硬性规则（主 agent）
 
-- **CLI 不可用时禁止自动降级（v13.0.42 硬不变规则，凌驾所有其他规则）**：任何 CLI/后端不可用场景（exit -1、exit 13、`API Error: Failed to parse JSON`、空输出、命令未找到、认证 401、沙箱拦子进程、`candidate not supported` 等）一律 **STOP 并向用户报告原始错误**，**不得自动改绑到另一个 backend**。orchestrator 必须等用户当轮明确授权（"降级到 X"或"用 X 继续"）才能调 `manage_binding.ps1 -AuthorizeStep/Steps`，并在 `authorization_log` 追加 `agent=X, authorization=<用户原话>`。**无用户原话 = 无授权 = 不降级**。即使 `binding-lock.json` 设了 `disable_auto_degrade=false`，orchestrator 仍须每轮重新获得用户授权。`-EmergencyInfraFailover` 即使代码级可用，也必须满足上述用户授权前提；否则按 `violations.log` 类别 `unauthorized_degrade` 记违规。此规则对应 `shared/core-logic.md §4（v13.0.42 硬不变规则段）`。
+- **CLI 不可用时禁止自动降级（v13.0.42 硬不变规则，凌驾所有其他规则）**：任何 CLI/后端不可用场景（exit -1、exit 13、`API Error: Failed to parse JSON`、空输出、命令未找到、认证 401、沙箱拦子进程、`candidate not supported` 等）一律 **STOP 并向用户报告原始错误**，**不得自动改绑到另一个 backend**。orchestrator 必须等用户当轮明确授权（"降级到 X"或"用 X 继续"）才能调 `manage_binding.ps1 -AuthorizeStep/Steps`，并在 `authorization_log` 追加 `agent=X, authorization=<用户原话>`。**无用户原话 = 无授权 = 不降级**。即使 `binding-lock.json` 设了 `disable_auto_degrade=false`，orchestrator 仍须每轮重新获得用户授权。`-EmergencyInfraFailover` 即使代码级可用，也必须满足上述用户授权前提；否则按 `violations.log` 类别 `unauthorized_degrade` 记违规。此规则对应 `shared/core-logic.md §4（v13.0.42 硬不变规则段）`。**池耗尽信号（F-10）**：`run_step.ps1` 重试耗尽输出 `INFRA_FAILURE_CRED_POOL_EXHAUSTED=1` 时，编排层**不得静默重跑**，须 STOP 并向用户报告（凭证池已排队等待 N 次仍 429），等用户显式授权后再动作。
+- **bash→PowerShell 唯一入口（F-01/F-02）**：bash 内调 PowerShell 一律 `scripts/ps.sh <ps1> [args…]`；**禁止**在 bash 内联 `powershell -Command "…$…"`（`$` 会被 bash 展开吞掉）。脚本路径与参数值**禁止反斜杠**（用 `C:/…` 或相对路径 `.harness/<task>/…`）；值含 `$`/`\` 先赋 shell 变量再传。`scripts/ps.sh` 对反斜杠/裸 `$` 参数 fail-closed（exit 2）。
 - 每步等上一 subagent 返回后才进下一步；不可并行、不可跳步
 - 主 agent 不得自己分析根因、写方案、改代码
 - 传参只传原始问题/产物，禁止夹带倾向性结论
@@ -175,6 +178,10 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manag
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.43 (2026-08-28)
+
+- **r4 CLI 障碍修复**：新增 `scripts/ps.sh`（bash→PowerShell 唯一入口，禁内联 `-Command`/反斜杠归一/裸 `$` fail-closed，F-01/F-02）；claude step1/2 scoped `--allowedTools` 放行 `.harness/<task>/**` 产物（F-04）；`run_step.ps1` 读 `harness-config.json` timeout（F-05）；quota 排队等待内层重试环修复 P-06（10 次真实生效 + 预算豁免，F-06）；`INFRA_FAILURE_CRED_POOL_EXHAUSTED` 信号（F-10）；`core-logic.md §4b` 旧降级描述替换 + 重复标题修复（F-11）。详见 `SKILL.md` v13.0.43 条目。
 
 ### v13.0.42 (2026-08-27)
 
