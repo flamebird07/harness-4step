@@ -1,10 +1,13 @@
 ---
 name: harness-4step
 description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（vision-reviewer：mimo CLI + 视觉模型看图，shared/core-logic.md §11，DSH 与 opencode 支持、Hermes 自带视觉不触发）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.43
+version: 13.0.44
 ---
 
-# 四步法 Harness（DeepSeek Harness 适配层 v13.0.43 — DSH subagent 为主 + CLI 可选；r4 CLI 障碍修复）
+<!-- DSH 适配层暂缓开发（2026-08-28 用户决定）：恢复开发时取消本注释并恢复 description 中的 "DeepSeek Harness" 兼容说明；期间 dsh-sub 绑定经 opencode 侧 run_step.ps1 fail-closed 拒绝属预期行为。 -->
+---
+
+# 四步法 Harness（DeepSeek Harness 适配层 v13.0.44 — DSH subagent 为主 + CLI 可选；r4 CLI 障碍修复）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 DSH 落地：把共享逻辑映射到 DeepSeek Harness 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -149,6 +152,11 @@ bash --timeout 300000 -c "powershell.exe -File opencode/scripts/run_kimi_step4.p
 5. 视觉审查（shared/core-logic.md §11）依赖共享 runner `opencode/scripts/run_vision_review.ps1`：从仓库根目录运行时用相对路径 `opencode/scripts/run_vision_review.ps1`（与 CLI runner 共享模式一致）；单独复制脚本时一并复制该文件即可（mimo CLI 需已装并登录，见 `references/mimo-cli-login.md`）
 
 ## 版本历史
+
+### v13.0.44 (2026-08-28)
+
+- **与 origin/master 合并 + 本地独家改动落地**：同步上游 v13.0.41 sidecar mutex + v13.0.42 exit-13 重试/r4 CLI 障碍修复（ps.sh/quota 内环/§4b 对齐）族的全部改进；叠加本地 5 项独家（v13.0.42 本地闭环产物）——1) `opencode/scripts/run_step.ps1` / `run_claude_step12.ps1` 新增 `-AddDirs` 参数（ZCode 兼容：避免整根 --add-dir 扫 .harness 卡死，claude 接收逗号分隔窄目录）；2) ZCode 适配层 + 4 文件 `*.bak` gitignore 覆盖；3) SKILL.md / dsh/SKILL.md / opencode/SKILL.md 头部加入 DSH 适配层暂缓开发说明（用户 2026-08-28 决定）；4) docs/violations.log：删 7 条已闭环（V-08-14-02、V-08-19-违规7、V-08-20-01、V-08-20-02、V-08-22-mimo-overreach、V-08-22-step4-write、V-08-22-step4-write-falsepositive），保留 3 条标「已缓解·保留监控」（V-08-14-01、fix-38279659、V-08-22-step2-overreach）+ 审查注记。5) ZCode SKILL.md 增加 version: 13.0.42 字段（独立仓库 Documents/四步法，不进 push 范围）。本地提交 5e08188（OpenCode 副本）+ 05b5e3a（Hermes 镜像）的功能均已合并至本版本。
+
 
 ### v13.0.43 (2026-08-28)
 

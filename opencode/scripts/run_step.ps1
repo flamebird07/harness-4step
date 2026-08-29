@@ -11,7 +11,8 @@ param(
     [int]$TimeoutSeconds = 180,
     [int]$MaxAttempts = 3,
     [int]$MaxSplitDepth = 3,
-    [int]$MaxTotalBudget = 1500,  # P-07: 总预算（秒），须 < 外层 bash timeout；超限即壁死+handoff，避免外层硬杀丢证据
+    [int]$MaxTotalBudget = 1500,
+    [string]$AddDirs = "",   # v13.0.42 ZCode 兼容：目标目录透传 runner --add-dir（逗号分隔；空=只用 cwd）  # P-07: 总预算（秒），须 < 外层 bash timeout；超限即壁死+handoff，避免外层硬杀丢证据
     [int]$MaxFailoverAttempts = 3 # F-02: 应急降级重试上限；被拒后不再静默 return，循环重试，仍失败 exit 5
 )
 $bomScript = Join-Path $PSScriptRoot "check-bom.ps1"
@@ -114,7 +115,7 @@ function Invoke-Runner([string]$pf, [string]$od) {
         return [pscustomobject]@{ ExitCode = 99; Output = @("BINDING=opencode-sub", "STEP=$Step", "SUBAGENT=$subagent", "EXIT_CODE=99") }
     }
     $extra = @{ PromptFile = $pf; WorkspaceDir = $WorkspaceDir; OutDir = $od; TimeoutSeconds = $TimeoutSeconds }
-    if ($b.agent -eq "claude") { $extra["Step"] = $Step; $extra["Permissions"] = $b.permission_mode }
+    if ($b.agent -eq "claude") { $extra["Step"] = $Step; $extra["Permissions"] = $b.permission_mode; if ($AddDirs) { $extra["AddDirs"] = $AddDirs } }
     if ($b.agent -eq "codex") { $extra["Step"] = $Step; $extra["Permissions"] = $b.permission_mode; if ($b.model) { $extra["Model"] = $b.model } }
     if ($b.agent -eq "mimo" -or $b.agent -eq "kimi") {
         $extra["Step"] = $Step

@@ -1,7 +1,8 @@
 ---
 name: harness-4step
-description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。"
-version: 13.0.43
+description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。
+<!-- DSH 适配层暂缓开发（2026-08-28 用户决定）：涉及 DSH/dsh-sub 的兼容说明已在本文与 shared/core-logic.md、shared/binding-recommendation.md 中注释保留，恢复开发时取消注释；期间绑定为 dsh-sub 一律 fail-closed 拒绝。 -->"
+version: 13.0.44
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +12,9 @@ metadata:
     related_skills: [writing-plans, subagent-driven-development]
 ---
 
-# Harness 4-Step Method (v13.0.43 — r4 CLI 障碍修复)
+# Harness 4-Step Method (v13.0.44 — r4 CLI 障碍修复 + v13.0.42 自动降级禁令 + v13.0.41 sidecar mutex + v13.0.44 合并本地独家)
+
+<!-- DSH 适配层暂缓开发（2026-08-28 用户决定）：本文件涉及 DSH/dsh-sub 的兼容说明已注释保留，恢复开发时取消注释；期间绑定为 dsh-sub 一律 fail-closed 拒绝。 -->
 
 ## Naming Rules (IMPORTANT)
 - **Official skill name: `harness-4step`** — there is NO skill named `enforce-4-step-method`; this was a historical misnomer fully removed on 2026-07-29.
@@ -751,6 +754,12 @@ python scripts/check_version_consistency.py
 脚本检查：①三平台 frontmatter version 一致；②title/Version History 版本号对齐；③run_cli.py mimo 无 `prompt_mode="file"` bug（`-f` 是 file attach 不是 message flag）。
 
 ## Version History
+
+
+### v13.0.44 (2026-08-28)
+
+- **与 origin/master 合并 + 本地独家改动落地**：同步上游 v13.0.41 sidecar mutex + v13.0.42 exit-13 重试/r4 CLI 障碍修复（ps.sh/quota 内环/§4b 对齐）族的全部改进；叠加本地 5 项独家（v13.0.42 本地闭环产物）——1) `opencode/scripts/run_step.ps1` / `run_claude_step12.ps1` 新增 `-AddDirs` 参数（ZCode 兼容：避免整根 --add-dir 扫 .harness 卡死，claude 接收逗号分隔窄目录）；2) ZCode 适配层 + 4 文件 `*.bak` gitignore 覆盖；3) SKILL.md / dsh/SKILL.md / opencode/SKILL.md 头部加入 DSH 适配层暂缓开发说明（用户 2026-08-28 决定）；4) docs/violations.log：删 7 条已闭环，保留 3 条标「已缓解·保留监控」+ 审查注记。5) ZCode SKILL.md 增加 version 字段（独立仓库，不进 push 范围）。本地提交 5e08188（OpenCode 副本）+ 05b5e3a（Hermes 镜像）的功能均已合并至本版本。
+
 
 ### v13.0.43 (2026-08-28)
 

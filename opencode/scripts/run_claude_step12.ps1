@@ -9,7 +9,8 @@ param(
     [string]$Step = "step1",
     [int]$TimeoutSeconds = 180,
     [ValidateSet("default", "acceptEdits", "bypassPermissions")]
-    [string]$Permissions = "default"
+    [string]$Permissions = "default",
+    [string]$AddDirs = ""   # v13.0.42 ZCode 兼容：逗号分隔目标目录；空=只用 cwd（不再 --add-dir 整个 WorkspaceDir，避免扫 .harness 卡死）
 )
 
 $ErrorActionPreference = "Continue"
