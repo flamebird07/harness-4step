@@ -67,17 +67,21 @@ function Resolve-AddDir([string]$d) {
     if (-not [System.IO.Path]::IsPathRooted($d)) { $d = Join-Path (Get-Location).Path $d }
     return [System.IO.Path]::GetFullPath($d).Normalize([System.Text.NormalizationForm]::FormC)
 }
-$addDirs = New-Object System.Collections.Generic.List[string]
+# [P-09 fix 2026-09-01] 变量名必须避开 param 块里的 $AddDirs（PowerShell 5.1 大小写不敏感 + param 强类型 String
+# 会绑死同名变量为 String，导致下方 New-Object ... List[string] 赋值被默默吞掉、line 72 调 .Add() 触发
+# String 不含 Add 的报错 → run_step 看到 runner 无输出即判 empty_output → 三次重试 → EXIT_CODE=13）。
+# 这里用 $extraDirs 与 param 的 $AddDirs 区分（不再撞名）。
+$extraDirs = New-Object System.Collections.Generic.List[string]
 $wd = Resolve-AddDir $WorkspaceDir
-if ($wd) { [void]$addDirs.Add($wd) }
+if ($wd) { [void]$extraDirs.Add($wd) }
 if ($env:OPENCODE_EXTRA_ADD_DIRS) {
     foreach ($d in ($env:OPENCODE_EXTRA_ADD_DIRS -split ';')) {
         $rd = Resolve-AddDir $d
-        if ($rd -and -not $addDirs.Contains($rd)) { [void]$addDirs.Add($rd) }
+        if ($rd -and -not $extraDirs.Contains($rd)) { [void]$extraDirs.Add($rd) }
     }
 }
 $cmd = @("-p", "--output-format", "text")   # prompt 经管道喂 stdin，避免 8191 字符命令行截断；--add-dir 放行 Read 工具读各目录
-foreach ($d in $addDirs) { $cmd += "--add-dir"; $cmd += $d }
+foreach ($d in $extraDirs) { $cmd += "--add-dir"; $cmd += $d }
 if ($Permissions -ne "default") {
     $cmd += "--permission-mode"; $cmd += $Permissions
 }
@@ -97,7 +101,13 @@ $psi.RedirectStandardError = $true
 $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
 $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
 $psi.WorkingDirectory = $wd   # [F-03] 归一化全路径作为工作目录（中文路径不再 mojibake）
-$psi.Arguments = '-p --output-format text' + (($addDirs | ForEach-Object { ' --add-dir "' + $_.Replace('"', '\"') + '"' }) -join '')
+# [P-09 fix 2026-09-01 v3] prompt 改走命令行 -p "<prompt>"，不再用 stdin pipe。
+# 实测（2026-09-01）：Process.Start + stdin pipe 喂完整 prompt 在 Windows + Claude CLI 2.1.220
+# 下会挂死（600s 无任何 stdout/stderr，被 taskkill）；同参数改 -p "<prompt>" 命令行传参则
+# ~6 分钟正常 exit 0 并落盘 step1-problems.md。prompt < 8191 字节（当前 2000B），不触发命令行截断。
+$promptEscaped = $prompt.Replace('"', '\"')
+$psi.Arguments = '-p --output-format text' + (($extraDirs | ForEach-Object { ' --add-dir "' + $_.Replace('"', '\"') + '"' }) -join '')
+$psi.Arguments += ' -p "' + $promptEscaped + '"'
 if ($Permissions -ne "default") { $psi.Arguments += ' --permission-mode ' + $Permissions }
 # [F-04] step1/2 审查者（claude default 权限门）：保持工作区行为性只读（default），仅放行 Write/Edit 到本任务产物目录。
 # 修复前 default 下 Write/Edit 全被 gate 拒 → 完整问题清单/方案只能落 stdout 摘要（P-04：r4 实测 901B 覆盖 1751B）。
@@ -112,16 +122,19 @@ if (($Step -eq "step1" -or $Step -eq "step2") -and $Permissions -eq "default") {
         $taskDir = (Split-Path -Parent $OutDir).Replace('\','/').TrimEnd('/')
     }
     $allowGlob = $taskDir + "/**"
-    $cmd += "--allowedTools"; $cmd += ("Write(" + $allowGlob + ")")
+    # [P-09 fix 2026-09-01 v4] Claude CLI 2.1.220 明确拒绝 --allowedTools "Write(glob)"（stderr：
+    # "Write(...) is not matched by file permission checks — only Edit(path) rules are. Use
+    # Edit(...) instead (Edit rules cover all file-editing tools)"）。传 Write 规则只会让 CLI
+    # 报"等待文件写入授权"而实际不写 step1-problems.md。因此仅传 Edit(glob)——Edit 规则覆盖
+    # Write 工具，step1 审查者才能正常落盘产物。
     $cmd += "--allowedTools"; $cmd += ("Edit(" + $allowGlob + ")")
-    $psi.Arguments += ' --allowedTools "Write(' + $allowGlob + ')"'
     $psi.Arguments += ' --allowedTools "Edit(' + $allowGlob + ')"'
 }
 $argSummary = [ordered]@{
     executable = (Split-Path -Leaf $claudeExe)
-    switches = @("-p", "--output-format", "text") + ($addDirs | ForEach-Object { "--add-dir" }) + $(if ($Permissions -ne "default") { @("--permission-mode") } else { @() })
+    switches = @("-p", "--output-format", "text") + ($extraDirs | ForEach-Object { "--add-dir" }) + $(if ($Permissions -ne "default") { @("--permission-mode") } else { @() })
     add_dir = $true
-    add_dirs = @($addDirs)   # [F-03] 实际传给 --add-dir 的目录清单（含 OPENCODE_EXTRA_ADD_DIRS）
+    add_dirs = @($extraDirs)   # [F-03] 实际传给 --add-dir 的目录清单（含 OPENCODE_EXTRA_ADD_DIRS）
     workspace_path_length = $WorkspaceDir.Length
     allowed_tools_glob = $allowGlob   # [F-04] step1/2 default 下放行的产物 Write/Edit glob（非 step1/2 为 $null）
 }
@@ -131,17 +144,8 @@ $proc.StartInfo = $psi
 if (-not $proc.Start()) { throw "Failed to start Claude executable: $claudeExe" }
 $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
 $stderrTask = $proc.StandardError.ReadToEndAsync()
-$stdinWrite = "success"
-# [F-03] UTF-8 BOM 写入 stdin：PS 5.1 的 StandardInput StreamWriter 编码不可靠（可能按 ANSI），
-# 直接 BaseStream 写 UTF-8 BOM + NFC 字节，保证 CLI 侧按 UTF-8 解码（与 check-bom.ps1 相同 EF BB BF 前置）。
-$utf8Bom = New-Object System.Text.UTF8Encoding($true)
-$promptBytes = $utf8Bom.GetPreamble() + $utf8Bom.GetBytes($prompt)
-try {
-    $proc.StandardInput.BaseStream.Write($promptBytes, 0, $promptBytes.Length)
-    $proc.StandardInput.BaseStream.Flush()
-    $proc.StandardInput.Close()
-}
-catch { $stdinWrite = "failure: $($_.Exception.Message)"; try { $proc.StandardInput.Close() } catch {} }
+# [P-09 fix 2026-09-01 v3] prompt 已改命令行 -p 传参；不再写 stdin（该路径实测挂死）。
+$stdinWrite = "not-used-cmdline-p"
 
 # P-09: 启动后立即写 "running" evidence.json——外层硬杀（SIGKILL/timeout）时仍有启动记录，
 # 不再留下空目录无证据。最终正常退出会覆盖为完整 evidence（见下方 $evidence | ConvertTo-Json）。

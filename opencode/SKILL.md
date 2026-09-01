@@ -1,10 +1,13 @@
 ---
 name: four-step-harness
 description: "四步法 Harness + Loops 循环机制：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode，共享逻辑见仓库 shared/。最小集 v13.0.13 引入脚本 orchestrator（run_step.ps1） + binding-lock.json fail-closed 校验 + 5 runner evidence.json 写盘 + BLOCKED_SPLIT_LIMIT 壁垒 + Pitfalls 节。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.44
 ---
 
 # 四步法 Harness（opencode 适配层）v13.0.44 — r4 CLI 障碍修复
+version: 13.0.45
+---
+
+# 四步法 Harness（opencode 适配层）v13.0.45 — run_claude_step12 R1-R4 修复
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 opencode 落地：把共享逻辑映射到 opencode 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -178,6 +181,10 @@ bash --timeout 300000 -c "powershell.exe -NoProfile -File opencode/scripts/manag
 更多细节（推荐矩阵、编号、循环、终止条件）见仓库 `shared/core-logic.md` 与 `shared/binding-recommendation.md`。
 
 ## 版本历史（Version History）
+
+### v13.0.45 (2026-09-01)
+
+- **run_claude_step12.ps1 四个根因修复（title3-bug-2026-09-01 四步法闭环）**：① R1 `$addDirs`/`$AddDirs` 撞名 → `$extraDirs`；② allowedTools 仅 `Edit(glob)`（CLI 2.1.220 拒 `Write(glob)`）；③ stdin pipe 喂完整 prompt 在 Windows 挂死（600s 零输出）→ 改命令行 `-p "<prompt>"`；④ `harness-config.json` step1/2 timeout 120s→600s（实际需 360-413s）。端到端验证：原 task step1 重跑 `EXIT_CODE=0`，step1-problems.md 落盘 9019B。详见 `SKILL.md` v13.0.45 条目。
 
 ### v13.0.44 (2026-08-28)
 

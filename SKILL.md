@@ -2,7 +2,7 @@
 name: harness-4step
 description: "Enforce four-step code changes with locked CLI binding (decided by binding-lock.json), atomic to-do queue, recursive timeout splitting, evidence, and a visible report after every step. 单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑在 shared/ 目录。含四步法内部视觉兜底（shared/core-logic.md §11，DSH/opencode 经 mimo 视觉模型看图，Hermes 自带视觉不触发）。
 <!-- DSH 适配层暂缓开发（2026-08-28 用户决定）：涉及 DSH/dsh-sub 的兼容说明已在本文与 shared/core-logic.md、shared/binding-recommendation.md 中注释保留，恢复开发时取消注释；期间绑定为 dsh-sub 一律 fail-closed 拒绝。 -->"
-version: 13.0.44
+version: 13.0.45
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -13,6 +13,7 @@ metadata:
 ---
 
 # Harness 4-Step Method (v13.0.44 — r4 CLI 障碍修复 + v13.0.42 自动降级禁令 + v13.0.41 sidecar mutex + v13.0.44 合并本地独家)
+# Harness 4-Step Method (v13.0.45 — run_claude_step12 R1-R4 修复 + v13.0.44 合并本地独家)
 
 <!-- DSH 适配层暂缓开发（2026-08-28 用户决定）：本文件涉及 DSH/dsh-sub 的兼容说明已注释保留，恢复开发时取消注释；期间绑定为 dsh-sub 一律 fail-closed 拒绝。 -->
 
@@ -755,6 +756,10 @@ python scripts/check_version_consistency.py
 
 ## Version History
 
+
+### v13.0.45 (2026-09-01)
+
+- **run_claude_step12.ps1 四个根因修复（title3-bug-2026-09-01 四步法闭环，ZCode 会话）**：修复 harness runner 在 Windows + Claude CLI 2.1.220 下的空输出/`INFRA_FAILURE:empty_output`/`EXIT_CODE=13`——① R1 变量名冲突：`$addDirs` 与 param `$AddDirs` 撞名（PS 大小写不敏感 + 强类型 String），`New-Object List[string]` 赋值被吞 → `String.Add` 报错 → runner 无输出被判 empty_output，重命名 `$extraDirs`；② R2 allowedTools：`Write(glob)` 被 CLI 2.1.220 拒绝（stderr "only Edit(path) rules are"），仅传 `Edit(glob)`（Edit 规则覆盖 Write 工具）；③ R3 **stdin pipe 喂完整 prompt 在 Windows 挂死**（600s 零输出），改命令行 `-p "<prompt>"` 传参（prompt <8191 字节不触发命令行截断）；④ R4 `harness-config.json` step1/2 timeout=120s 不足（实际需 360-413s），上调 step1/2/3=600s、step4=300s。端到端验证：原 task step1 重跑 `EXIT_CODE=0`，step1-problems.md 落盘 9019B。同时将 v13.0.44 本地独家变更（-AddDirs ZCode 兼容等 5 项）正式并入源头仓库。版本 13.0.44 → 13.0.45。
 
 ### v13.0.44 (2026-08-28)
 

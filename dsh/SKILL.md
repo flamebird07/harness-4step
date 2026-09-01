@@ -1,13 +1,14 @@
 ---
 name: harness-4step
 description: "四步法 Harness（DeepSeek Harness 适配层）：审查→方案→执行→复审→循环直到通过。用独立 subagent 保证每步思维互不干扰、跳出逻辑死角；裁判不能当运动员。单一项目兼容 Hermes/opencode/DeepSeek Harness，共享逻辑见仓库 shared/。含四步法内部视觉兜底（vision-reviewer：mimo CLI + 视觉模型看图，shared/core-logic.md §11，DSH 与 opencode 支持、Hermes 自带视觉不触发）。Use when the user asks to run 四步法/4step/four-step harness/审查出方案执行复审/code review loop, or wants a bug fixed through separated audit-plan-implement-verify roles."
-version: 13.0.44
+version: 13.0.45
 ---
 
 <!-- DSH 适配层暂缓开发（2026-08-28 用户决定）：恢复开发时取消本注释并恢复 description 中的 "DeepSeek Harness" 兼容说明；期间 dsh-sub 绑定经 opencode 侧 run_step.ps1 fail-closed 拒绝属预期行为。 -->
 ---
 
 # 四步法 Harness（DeepSeek Harness 适配层 v13.0.44 — DSH subagent 为主 + CLI 可选；r4 CLI 障碍修复）
+# 四步法 Harness（DeepSeek Harness 适配层 v13.0.45 — DSH subagent 为主 + CLI 可选；run_claude_step12 R1-R4 修复）
 
 **逻辑源 = 仓库 `shared/core-logic.md`。** 本文件只做 DSH 落地：把共享逻辑映射到 DeepSeek Harness 的 subagent 与工具，不复制逻辑实现。逻辑有缺陷去改 shared/，本层只跟着更新引用。
 
@@ -152,6 +153,10 @@ bash --timeout 300000 -c "powershell.exe -File opencode/scripts/run_kimi_step4.p
 5. 视觉审查（shared/core-logic.md §11）依赖共享 runner `opencode/scripts/run_vision_review.ps1`：从仓库根目录运行时用相对路径 `opencode/scripts/run_vision_review.ps1`（与 CLI runner 共享模式一致）；单独复制脚本时一并复制该文件即可（mimo CLI 需已装并登录，见 `references/mimo-cli-login.md`）
 
 ## 版本历史
+
+### v13.0.45 (2026-09-01)
+
+- **opencode 层 run_claude_step12.ps1 四根因修复（dsh 仅同步版本与设计意图）**：R1 `$addDirs`/`$AddDirs` 撞名 → `$extraDirs`；R2 allowedTools 仅 `Edit(glob)`（CLI 2.1.220 拒 `Write(glob)`）；R3 stdin pipe 喂完整 prompt 在 Windows 挂死 → 命令行 `-p "<prompt>"`；R4 `harness-config.json` step1/2 timeout 120s→600s。端到端验证 step1 `EXIT_CODE=0` + step1-problems.md 落盘 9019B。版本 13.0.44 → 13.0.45。
 
 ### v13.0.44 (2026-08-28)
 
